@@ -10,4 +10,4 @@ services:
       - key: POLL_INTERVAL
         value: 60
       - key: TREND_THRESHOLD
-        value: 0.03
+        value: 0.02
