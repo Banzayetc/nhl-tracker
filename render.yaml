@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: nhl-trend-tracker
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 2
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: DB_PATH
+        value: /data/polymarket.db
+      - key: POLL_INTERVAL
+        value: 60
+      - key: TREND_THRESHOLD
+        value: 0.03
