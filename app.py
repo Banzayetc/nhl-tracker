@@ -284,12 +284,14 @@ h1 { color: #00d4ff; font-size: 1.3rem; letter-spacing: 3px; }
 }
 .empty h2 { font-size: 1rem; color: #444; }
 footer { margin-top: 32px; font-size: 0.7rem; color: #2a2a2a; text-align: right; }
+.mv-up   { color: #22c55e; font-weight: bold; }
+.mv-down { color: #ef4444; font-weight: bold; }
 </style>
 </head>
 <body>
 <header>
   <h1>⬆ NHL TREND TRACKER</h1>
-  <p class="sub">Polymarket · тренд ≥ 3¢ · окно: последние 24ч до матча</p>
+  <p class="sub">Polymarket · тренд ≥ 2¢ · окно: последние 24ч · матчи через 12–48ч</p>
 </header>
 
 <div id="root"></div>
@@ -334,20 +336,32 @@ if (!MATCHES.length) {
     const cls   = isUp ? "up" : "down";
     const strong = Math.abs(m.delta_cents) >= 5 ? " strong" : "";
 
+    const priceAStart = m.history.length ? +(m.history[0].p * 100).toFixed(1) : null;
+    const priceANow  = +(m.price_a * 100).toFixed(1);
+    const priceBStart = priceAStart !== null ? +(100 - priceAStart).toFixed(1) : null;
+    const priceBNow  = +(m.price_b * 100).toFixed(1);
+
+    const mvA = priceAStart !== null
+      ? `<span class="${priceANow > priceAStart ? 'mv-up' : 'mv-down'}">${priceAStart}¢ → ${priceANow}¢</span>`
+      : `${priceANow}¢`;
+    const mvB = priceBStart !== null
+      ? `<span class="${priceBNow > priceBStart ? 'mv-up' : 'mv-down'}">${priceBStart}¢ → ${priceBNow}¢</span>`
+      : `${priceBNow}¢`;
+
     const card = document.createElement("div");
     card.className = "card" + strong;
     card.innerHTML = `
       <div class="badge">⏱ через ${m.hours_left}ч до матча</div>
       <div class="teams">${m.team_a}<span class="vs">vs</span>${m.team_b}</div>
       <div class="match-time">${fmtDate(m.match_start)}</div>
-      <div class="delta ${cls}">${arrow} ${Math.abs(m.delta_cents)}¢</div>
+      <div class="delta ${cls}">${arrow} ${Math.abs(m.delta_cents)}¢ за 24ч</div>
       <div class="trend-label">
         ↑ растёт: <strong>${m.trending_team}</strong>
         &nbsp;&nbsp;↓ падает: <span style="color:#555">${m.fading_team}</span>
       </div>
       <div class="prices">
-        <span>${m.team_a}: ${(m.price_a * 100).toFixed(1)}¢</span>
-        <span>${m.team_b}: ${(m.price_b * 100).toFixed(1)}¢</span>
+        <span>${m.team_a}: ${mvA}</span>
+        <span>${m.team_b}: ${mvB}</span>
       </div>
       <canvas id="c${i}" height="90"></canvas>
     `;
