@@ -426,6 +426,54 @@ def api_matches():
 def health():
     return "ok", 200
 
+@app.route("/debug/api")
+def debug_api():
+    """Shows raw Polymarket API response for NHL markets."""
+    try:
+        r = requests.get(
+            f"{GAMMA_BASE}/markets",
+            params={"active": "true", "closed": "false", "tag_slug": "nhl", "limit": 20},
+            timeout=20,
+        )
+        data = r.json()
+        markets = data if isinstance(data, list) else data.get("markets", [])
+        # Return simplified view of first 10 markets
+        preview = []
+        for m in markets[:10]:
+            tokens = m.get("tokens", [])
+            preview.append({
+                "id":         m.get("id"),
+                "question":   m.get("question"),
+                "tokens_count": len(tokens),
+                "prices":     [t.get("price") for t in tokens],
+                "outcomes":   [t.get("outcome") for t in tokens],
+                "startDate":  m.get("startDate"),
+                "gameStartTime": m.get("gameStartTime"),
+                "endDate":    m.get("endDate"),
+                "active":     m.get("active"),
+                "closed":     m.get("closed"),
+                "tags":       [t.get("slug") for t in m.get("tags", [])],
+            })
+        return jsonify({
+            "total_returned": len(markets),
+            "markets_preview": preview,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/debug/snapshots")
+def debug_snapshots():
+    """Shows how many snapshots are in DB and latest entries."""
+    with get_con() as con:
+        total = con.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
+        latest = con.execute(
+            "SELECT market_id, question, price_a, price_b, fetched_at, match_start FROM snapshots ORDER BY fetched_at DESC LIMIT 10"
+        ).fetchall()
+        return jsonify({
+            "total_snapshots": total,
+            "latest": [dict(r) for r in latest],
+        })
+
 # ── Startup (runs for both `python app.py` and gunicorn) ─────────────────────
 
 def _bootstrap():
