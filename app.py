@@ -466,35 +466,54 @@ def health():
 
 @app.route("/debug/api")
 def debug_api():
-    """Shows /events NHL response structure."""
+    """Tries to find individual NHL game matchups."""
+    output = {}
+
+    # Try /events with larger limit, look for ones with gameStartTime
     try:
         r = requests.get(
             f"{GAMMA_BASE}/events",
-            params={"active": "true", "closed": "false", "tag_slug": "nhl", "limit": 10},
+            params={"active": "true", "closed": "false", "tag_slug": "nhl", "limit": 100},
             timeout=20,
         )
         data = r.json()
         events = data if isinstance(data, list) else data.get("events", [])
-        preview = []
-        for e in events[:5]:
-            markets = e.get("markets", [])
-            first = markets[0] if markets else {}
-            preview.append({
-                "event_id":      e.get("id"),
-                "title":         e.get("title"),
-                "startDate":     e.get("startDate"),
-                "markets_count": len(markets),
-                "first_market": {
-                    "question":      first.get("question"),
-                    "outcomes":      first.get("outcomes"),
-                    "outcomePrices": first.get("outcomePrices"),
-                    "gameStartTime": first.get("gameStartTime"),
-                    "tokens_count":  len(first.get("tokens", [])),
-                },
-            })
-        return jsonify({"total_events": len(events), "preview": preview})
+        with_game_time = [e for e in events if e.get("startDate") and "vs" in (e.get("title") or "").lower()]
+        output["events_nhl_total"] = len(events)
+        output["events_with_vs_title"] = len(with_game_time)
+        output["sample_titles"] = [e.get("title") for e in events[:20]]
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        output["events_nhl"] = {"error": str(e)}
+
+    # Try fetching a known game slug directly
+    try:
+        r = requests.get(
+            f"{GAMMA_BASE}/events",
+            params={"slug": "nhl-sea-cbj-2026-03-21"},
+            timeout=20,
+        )
+        data = r.json()
+        events = data if isinstance(data, list) else data.get("events", [])
+        if events:
+            e = events[0]
+            markets = e.get("markets", [])
+            output["slug_test"] = {
+                "title":   e.get("title"),
+                "start":   e.get("startDate"),
+                "markets": len(markets),
+                "first_market": {
+                    "question":      markets[0].get("question") if markets else None,
+                    "outcomes":      markets[0].get("outcomes") if markets else None,
+                    "outcomePrices": markets[0].get("outcomePrices") if markets else None,
+                    "gameStartTime": markets[0].get("gameStartTime") if markets else None,
+                } if markets else None,
+            }
+        else:
+            output["slug_test"] = "no results"
+    except Exception as e:
+        output["slug_test"] = {"error": str(e)}
+
+    return jsonify(output)
 
 @app.route("/debug/snapshots")
 def debug_snapshots():
