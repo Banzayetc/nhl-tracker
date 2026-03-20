@@ -49,17 +49,12 @@ def init_db():
 # ── Polymarket API ────────────────────────────────────────────────────────────
 
 def fetch_nhl_markets() -> list[dict]:
-    """Fetch active NHL binary markets from Gamma API via /events endpoint."""
+    """Fetch active NHL game markets (Moneyline) from Gamma API."""
     results = []
     try:
         r = requests.get(
             f"{GAMMA_BASE}/events",
-            params={
-                "active":    "true",
-                "closed":    "false",
-                "tag_slug":  "nhl",
-                "limit":     100,
-            },
+            params={"active": "true", "closed": "false", "tag_slug": "nhl", "limit": 100},
             timeout=20,
         )
         r.raise_for_status()
@@ -67,37 +62,57 @@ def fetch_nhl_markets() -> list[dict]:
         events = data if isinstance(data, list) else data.get("events", [])
 
         for event in events:
-            for m in event.get("markets", []):
-                # Build tokens from outcomePrices + outcomes
-                tokens = m.get("tokens", [])
-                if not tokens:
-                    outcome_prices = m.get("outcomePrices", [])
-                    outcomes       = m.get("outcomes", [])
-                    if outcome_prices and outcomes and len(outcome_prices) == len(outcomes):
-                        try:
-                            tokens = [
-                                {"outcome": out, "price": float(pr)}
-                                for out, pr in zip(outcomes, outcome_prices)
-                            ]
-                        except (ValueError, TypeError):
-                            continue
+            title = event.get("title", "")
+            # Only individual game events (contain "vs")
+            if "vs" not in title.lower():
+                continue
 
-                if len(tokens) != 2:
-                    continue
+            markets = event.get("markets", [])
 
-                # Prefer event startDate as game time
-                game_start = m.get("gameStartTime") or event.get("startDate")
-                if not game_start:
-                    continue
+            # Prefer Moneyline market, fall back to first binary market
+            target = None
+            for m in markets:
+                q = (m.get("question") or "").lower()
+                if "moneyline" in q:
+                    target = m
+                    break
+            if not target:
+                # fallback: first market with 2 outcomes
+                for m in markets:
+                    outcomes = m.get("outcomes", [])
+                    prices   = m.get("outcomePrices", [])
+                    if len(outcomes) == 2 and len(prices) == 2:
+                        target = m
+                        break
 
-                m["tokens"]        = tokens
-                m["gameStartTime"] = game_start
-                # Carry event title for display if question is missing
-                if not m.get("question"):
-                    m["question"] = event.get("title", "")
-                results.append(m)
+            if not target:
+                continue
 
-        log.info(f"fetch_nhl_markets: {len(results)} markets from {len(events)} events")
+            outcomes = target.get("outcomes", [])
+            prices   = target.get("outcomePrices", [])
+            if len(outcomes) != 2 or len(prices) != 2:
+                continue
+
+            try:
+                tokens = [
+                    {"outcome": outcomes[0], "price": float(prices[0])},
+                    {"outcome": outcomes[1], "price": float(prices[1])},
+                ]
+            except (ValueError, TypeError):
+                continue
+
+            # Parse gameStartTime: "2026-03-21 21:00:00+00"
+            game_start_str = target.get("gameStartTime") or event.get("startDate")
+            if not game_start_str:
+                continue
+
+            target["tokens"]        = tokens
+            target["gameStartTime"] = game_start_str
+            if not target.get("question"):
+                target["question"] = title
+            results.append(target)
+
+        log.info(f"fetch_nhl_markets: {len(results)} moneyline markets from {len(events)} events")
     except Exception as e:
         log.error(f"fetch_nhl_markets: {e}")
 
@@ -108,11 +123,16 @@ def parse_game_start(m: dict) -> int | None:
     """Return Unix timestamp of game start, or None if unparseable."""
     for field in ("gameStartTime", "startDate", "endDate"):
         val = m.get(field)
-        if val:
-            try:
-                return int(datetime.fromisoformat(val.replace("Z", "+00:00")).timestamp())
-            except Exception:
-                continue
+        if not val:
+            continue
+        try:
+            # Handle "2026-03-21 21:00:00+00" and ISO 8601 formats
+            val = val.strip().replace(" ", "T")
+            if val.endswith("+00"):
+                val += ":00"
+            return int(datetime.fromisoformat(val).timestamp())
+        except Exception:
+            continue
     return None
 
 
