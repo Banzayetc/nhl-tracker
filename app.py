@@ -535,8 +535,46 @@ def debug_api():
 
     return jsonify(output)
 
-@app.route("/debug/snapshots")
-def debug_snapshots():
+@app.route("/debug/force")
+def debug_force():
+    """Force a snapshot right now and return detailed results."""
+    now = int(time.time())
+    markets = fetch_nhl_markets()
+    saved = 0
+    skipped = []
+
+    with get_con() as con:
+        for m in markets:
+            parsed = parse_market(m)
+            if not parsed:
+                skipped.append({"question": m.get("question", "?"), "reason": "parse_market failed"})
+                continue
+
+            hours = (parsed["match_start"] - now) / 3600
+            if hours < 0 or hours > 72:
+                skipped.append({"question": parsed["question"], "reason": f"hours_to_start={round(hours,1)} (outside 0-72h)"})
+                continue
+
+            con.execute(
+                """INSERT INTO snapshots
+                   (market_id, question, team_a, team_b, match_start, price_a, price_b, fetched_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (parsed["market_id"], parsed["question"],
+                 parsed["team_a"], parsed["team_b"],
+                 parsed["match_start"], parsed["price_a"], parsed["price_b"], now),
+            )
+            saved += 1
+
+    return jsonify({
+        "markets_fetched": len(markets),
+        "saved":           saved,
+        "skipped":         skipped[:20],
+        "sample_markets":  [
+            {"question": m.get("question"), "gameStartTime": m.get("gameStartTime"),
+             "outcomes": m.get("outcomes"), "outcomePrices": m.get("outcomePrices")}
+            for m in markets[:5]
+        ],
+    })
     """Shows how many snapshots are in DB and latest entries."""
     with get_con() as con:
         total = con.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
