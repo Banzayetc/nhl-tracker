@@ -49,31 +49,26 @@ def init_db():
 # ── Polymarket API ────────────────────────────────────────────────────────────
 
 def fetch_nhl_markets() -> list[dict]:
-    """Fetch active NHL binary markets from Gamma API."""
+    """Fetch active NHL binary markets from Gamma API via /events endpoint."""
     results = []
     try:
-        # Fetch sports markets - these have gameStartTime set
-        for tag in ["nhl", "hockey", "sports"]:
-            r = requests.get(
-                f"{GAMMA_BASE}/markets",
-                params={
-                    "active": "true",
-                    "closed": "false",
-                    "tag_slug": tag,
-                    "limit": 100,
-                },
-                timeout=20,
-            )
-            r.raise_for_status()
-            data = r.json()
-            markets = data if isinstance(data, list) else data.get("markets", [])
+        r = requests.get(
+            f"{GAMMA_BASE}/events",
+            params={
+                "active":    "true",
+                "closed":    "false",
+                "tag_slug":  "nhl",
+                "limit":     100,
+            },
+            timeout=20,
+        )
+        r.raise_for_status()
+        data = r.json()
+        events = data if isinstance(data, list) else data.get("events", [])
 
-            for m in markets:
-                # Only keep markets with a real game start time
-                if not m.get("gameStartTime"):
-                    continue
-
-                # Build tokens from outcomePrices + outcomes if tokens field is empty
+        for event in events:
+            for m in event.get("markets", []):
+                # Build tokens from outcomePrices + outcomes
                 tokens = m.get("tokens", [])
                 if not tokens:
                     outcome_prices = m.get("outcomePrices", [])
@@ -87,12 +82,22 @@ def fetch_nhl_markets() -> list[dict]:
                         except (ValueError, TypeError):
                             continue
 
-                if len(tokens) == 2:
-                    m["tokens"] = tokens
-                    if m not in results:
-                        results.append(m)
+                if len(tokens) != 2:
+                    continue
 
-        log.info(f"fetch_nhl_markets: found {len(results)} valid markets")
+                # Prefer event startDate as game time
+                game_start = m.get("gameStartTime") or event.get("startDate")
+                if not game_start:
+                    continue
+
+                m["tokens"]        = tokens
+                m["gameStartTime"] = game_start
+                # Carry event title for display if question is missing
+                if not m.get("question"):
+                    m["question"] = event.get("title", "")
+                results.append(m)
+
+        log.info(f"fetch_nhl_markets: {len(results)} markets from {len(events)} events")
     except Exception as e:
         log.error(f"fetch_nhl_markets: {e}")
 
@@ -461,31 +466,35 @@ def health():
 
 @app.route("/debug/api")
 def debug_api():
-    """Shows raw Polymarket API response - tests nhl/hockey/sports tags."""
-    output = {}
-    for tag in ["nhl", "hockey", "sports"]:
-        try:
-            r = requests.get(
-                f"{GAMMA_BASE}/markets",
-                params={"active": "true", "closed": "false", "tag_slug": tag, "limit": 20},
-                timeout=20,
-            )
-            data = r.json()
-            markets = data if isinstance(data, list) else data.get("markets", [])
-            preview = []
-            for m in markets[:5]:
-                preview.append({
-                    "id":            m.get("id"),
-                    "question":      m.get("question"),
-                    "gameStartTime": m.get("gameStartTime"),
-                    "outcomes":      m.get("outcomes", []),
-                    "outcomePrices": m.get("outcomePrices", []),
-                    "tokens_count":  len(m.get("tokens", [])),
-                })
-            output[tag] = {"total": len(markets), "preview": preview}
-        except Exception as e:
-            output[tag] = {"error": str(e)}
-    return jsonify(output)
+    """Shows /events NHL response structure."""
+    try:
+        r = requests.get(
+            f"{GAMMA_BASE}/events",
+            params={"active": "true", "closed": "false", "tag_slug": "nhl", "limit": 10},
+            timeout=20,
+        )
+        data = r.json()
+        events = data if isinstance(data, list) else data.get("events", [])
+        preview = []
+        for e in events[:5]:
+            markets = e.get("markets", [])
+            first = markets[0] if markets else {}
+            preview.append({
+                "event_id":      e.get("id"),
+                "title":         e.get("title"),
+                "startDate":     e.get("startDate"),
+                "markets_count": len(markets),
+                "first_market": {
+                    "question":      first.get("question"),
+                    "outcomes":      first.get("outcomes"),
+                    "outcomePrices": first.get("outcomePrices"),
+                    "gameStartTime": first.get("gameStartTime"),
+                    "tokens_count":  len(first.get("tokens", [])),
+                },
+            })
+        return jsonify({"total_events": len(events), "preview": preview})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/debug/snapshots")
 def debug_snapshots():
