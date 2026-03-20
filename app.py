@@ -50,20 +50,45 @@ def init_db():
 
 def fetch_nhl_markets() -> list[dict]:
     """Fetch active NHL binary markets from Gamma API."""
+    results = []
     try:
+        # Search by keyword - tag_slug=nhl returns unrelated markets
         r = requests.get(
             f"{GAMMA_BASE}/markets",
-            params={"active": "true", "closed": "false", "tag_slug": "nhl", "limit": 200},
+            params={
+                "active": "true",
+                "closed": "false",
+                "search": "NHL",
+                "limit": 100,
+            },
             timeout=20,
         )
         r.raise_for_status()
         data = r.json()
         markets = data if isinstance(data, list) else data.get("markets", [])
-        # Keep only binary markets (exactly 2 outcome tokens)
-        return [m for m in markets if len(m.get("tokens", [])) == 2]
+
+        for m in markets:
+            # Polymarket uses outcomePrices + outcomes instead of tokens in some responses
+            tokens = m.get("tokens", [])
+
+            # Try to reconstruct tokens from outcomePrices + outcomes
+            if not tokens:
+                outcome_prices = m.get("outcomePrices", [])
+                outcomes       = m.get("outcomes", [])
+                if outcome_prices and outcomes and len(outcome_prices) == len(outcomes):
+                    tokens = [
+                        {"outcome": out, "price": float(pr)}
+                        for out, pr in zip(outcomes, outcome_prices)
+                    ]
+
+            if len(tokens) == 2:
+                m["tokens"] = tokens
+                results.append(m)
+
     except Exception as e:
         log.error(f"fetch_nhl_markets: {e}")
-        return []
+
+    return results
 
 
 def parse_game_start(m: dict) -> int | None:
@@ -432,32 +457,28 @@ def debug_api():
     try:
         r = requests.get(
             f"{GAMMA_BASE}/markets",
-            params={"active": "true", "closed": "false", "tag_slug": "nhl", "limit": 20},
+            params={"active": "true", "closed": "false", "search": "NHL", "limit": 20},
             timeout=20,
         )
         data = r.json()
         markets = data if isinstance(data, list) else data.get("markets", [])
-        # Return simplified view of first 10 markets
         preview = []
         for m in markets[:10]:
             tokens = m.get("tokens", [])
             preview.append({
-                "id":         m.get("id"),
-                "question":   m.get("question"),
-                "tokens_count": len(tokens),
-                "prices":     [t.get("price") for t in tokens],
-                "outcomes":   [t.get("outcome") for t in tokens],
-                "startDate":  m.get("startDate"),
-                "gameStartTime": m.get("gameStartTime"),
-                "endDate":    m.get("endDate"),
-                "active":     m.get("active"),
-                "closed":     m.get("closed"),
-                "tags":       [t.get("slug") for t in m.get("tags", [])],
+                "id":             m.get("id"),
+                "question":       m.get("question"),
+                "tokens_count":   len(tokens),
+                "prices":         [t.get("price") for t in tokens],
+                "outcomes":       m.get("outcomes", []),
+                "outcomePrices":  m.get("outcomePrices", []),
+                "gameStartTime":  m.get("gameStartTime"),
+                "startDate":      m.get("startDate"),
+                "endDate":        m.get("endDate"),
+                "active":         m.get("active"),
+                "closed":         m.get("closed"),
             })
-        return jsonify({
-            "total_returned": len(markets),
-            "markets_preview": preview,
-        })
+        return jsonify({"total_returned": len(markets), "markets_preview": preview})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
