@@ -537,10 +537,8 @@ def debug_api():
 
 @app.route("/debug/force")
 def debug_force():
-    """Force a snapshot right now and return detailed results."""
+    """Inline fetch debug — shows exactly where market parsing fails."""
     now = int(time.time())
-
-    # First show raw events to debug fetch
     try:
         r = requests.get(
             f"{GAMMA_BASE}/events",
@@ -549,46 +547,70 @@ def debug_force():
         )
         data = r.json()
         events = data if isinstance(data, list) else data.get("events", [])
-        titles = [e.get("title", "") for e in events]
-        vs_titles = [t for t in titles if "vs" in t]
-        vs_lower  = [t for t in titles if "vs" in t.lower()]
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-    markets = fetch_nhl_markets()
-    saved = 0
-    skipped = []
+    vs_events = [e for e in events if "vs" in (e.get("title") or "")]
+    results = []
+    failures = []
 
-    with get_con() as con:
+    for event in vs_events[:5]:  # inspect first 5 game events in detail
+        title   = event.get("title", "")
+        markets = event.get("markets", [])
+        entry = {"title": title, "markets_count": len(markets), "markets_detail": []}
+
         for m in markets:
-            parsed = parse_market(m)
-            if not parsed:
-                skipped.append({"question": m.get("question", "?"), "reason": "parse_market failed"})
-                continue
+            outcomes = m.get("outcomes", [])
+            prices   = m.get("outcomePrices", [])
+            gst      = m.get("gameStartTime")
+            entry["markets_detail"].append({
+                "question":      m.get("question"),
+                "outcomes":      outcomes,
+                "outcomePrices": prices,
+                "gameStartTime": gst,
+                "tokens_count":  len(m.get("tokens", [])),
+            })
+        results.append(entry)
 
-            hours = (parsed["match_start"] - now) / 3600
-            if hours < 0 or hours > 72:
-                skipped.append({"question": parsed["question"], "reason": f"hours={round(hours,1)}"})
+    # Also try saving one market manually
+    saved = 0
+    for event in vs_events:
+        markets = event.get("markets", [])
+        for m in markets:
+            outcomes = m.get("outcomes", [])
+            prices   = m.get("outcomePrices", [])
+            gst      = m.get("gameStartTime") or event.get("startDate")
+            if len(outcomes) != 2 or len(prices) != 2:
+                failures.append(f"{event.get('title')}: outcomes={len(outcomes)} prices={len(prices)}")
                 continue
-
-            con.execute(
-                """INSERT INTO snapshots
-                   (market_id, question, team_a, team_b, match_start, price_a, price_b, fetched_at)
-                   VALUES (?,?,?,?,?,?,?,?)""",
-                (parsed["market_id"], parsed["question"],
-                 parsed["team_a"], parsed["team_b"],
-                 parsed["match_start"], parsed["price_a"], parsed["price_b"], now),
-            )
-            saved += 1
+            if not gst:
+                failures.append(f"{event.get('title')}: no gameStartTime")
+                continue
+            try:
+                tokens = [
+                    {"outcome": outcomes[0], "price": float(prices[0])},
+                    {"outcome": outcomes[1], "price": float(prices[1])},
+                ]
+                m["tokens"] = tokens
+                m["gameStartTime"] = gst
+                parsed = parse_market(m)
+                if not parsed:
+                    failures.append(f"{event.get('title')}: parse_market returned None")
+                    continue
+                hours = (parsed["match_start"] - now) / 3600
+                failures.append(f"{event.get('title')}: hours={round(hours,1)} ✓" if 0 <= hours <= 72 else f"{event.get('title')}: hours={round(hours,1)} OUTSIDE 0-72")
+                if 0 <= hours <= 72:
+                    saved += 1
+            except Exception as e:
+                failures.append(f"{event.get('title')}: exception {e}")
+            break  # one market per event is enough for debug
 
     return jsonify({
         "total_events":    len(events),
-        "vs_exact":        len(vs_titles),
-        "vs_lower":        len(vs_lower),
-        "sample_titles":   titles[:10],
-        "markets_fetched": len(markets),
-        "saved":           saved,
-        "skipped":         skipped[:10],
+        "vs_events":       len(vs_events),
+        "detail":          results,
+        "failures_sample": failures[:15],
+        "would_save":      saved,
     })
     """Shows how many snapshots are in DB and latest entries."""
     with get_con() as con:
