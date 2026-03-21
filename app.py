@@ -590,8 +590,8 @@ def debug_force():
     for event in vs_events:
         markets = event.get("markets", [])
         for m in markets:
-            outcomes = m.get("outcomes", [])
-            prices   = m.get("outcomePrices", [])
+            outcomes = _parse_str_or_list(m.get("outcomes", []))
+            prices   = _parse_str_or_list(m.get("outcomePrices", []))
             gst      = m.get("gameStartTime") or event.get("startDate")
             if len(outcomes) != 2 or len(prices) != 2:
                 failures.append(f"{event.get('title')}: outcomes={len(outcomes)} prices={len(prices)}")
@@ -611,12 +611,13 @@ def debug_force():
                     failures.append(f"{event.get('title')}: parse_market returned None")
                     continue
                 hours = (parsed["match_start"] - now) / 3600
-                failures.append(f"{event.get('title')}: hours={round(hours,1)} ✓" if 0 <= hours <= 72 else f"{event.get('title')}: hours={round(hours,1)} OUTSIDE 0-72")
+                status = "✓ IN WINDOW" if 0 <= hours <= 72 else f"OUTSIDE (hours={round(hours,1)})"
+                failures.append(f"{event.get('title')}: hours={round(hours,1)} {status}")
                 if 0 <= hours <= 72:
                     saved += 1
             except Exception as e:
                 failures.append(f"{event.get('title')}: exception {e}")
-            break  # one market per event is enough for debug
+            break
 
     return jsonify({
         "total_events":    len(events),
