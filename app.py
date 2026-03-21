@@ -650,9 +650,14 @@ def debug_snapshots():
         latest = con.execute(
             "SELECT market_id, question, price_a, price_b, fetched_at, match_start FROM snapshots ORDER BY fetched_at DESC LIMIT 10"
         ).fetchall()
+        unique_times = con.execute(
+            "SELECT DISTINCT fetched_at FROM snapshots ORDER BY fetched_at ASC"
+        ).fetchall()
         return jsonify({
-            "total_snapshots": total,
-            "latest": [dict(r) for r in latest],
+            "total_snapshots":    total,
+            "unique_snapshots":   len(unique_times),
+            "snapshot_times":     [r[0] for r in unique_times],
+            "latest":             [dict(r) for r in latest],
         })
 
 # ── Startup (runs for both `python app.py` and gunicorn) ─────────────────────
