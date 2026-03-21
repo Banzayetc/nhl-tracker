@@ -18,7 +18,18 @@ POLL_INTERVAL_MIN  = int(os.environ.get("POLL_INTERVAL", "60"))   # minutes
 TREND_THRESHOLD    = float(os.environ.get("TREND_THRESHOLD", "0.03"))  # 3 cents
 GAMMA_BASE         = "https://gamma-api.polymarket.com"
 
-app = Flask(__name__)
+import json as _json
+
+def _parse_str_or_list(val):
+    """outcomePrices/outcomes can be a JSON string or a Python list."""
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str):
+        try:
+            return _json.loads(val)
+        except Exception:
+            return []
+    return []
 
 # ── Database ──────────────────────────────────────────────────────────────────
 
@@ -63,7 +74,6 @@ def fetch_nhl_markets() -> list[dict]:
 
         for event in events:
             title = event.get("title", "")
-            # Only individual game events (contain "vs")
             if "vs" not in title.lower():
                 continue
 
@@ -73,14 +83,18 @@ def fetch_nhl_markets() -> list[dict]:
             target = None
             for m in markets:
                 q = (m.get("question") or "").lower()
-                if "moneyline" in q:
-                    target = m
-                    break
+                if "moneyline" in q or q == title.lower():
+                    outcomes = _parse_str_or_list(m.get("outcomes", []))
+                    prices   = _parse_str_or_list(m.get("outcomePrices", []))
+                    if len(outcomes) == 2 and len(prices) == 2:
+                        target = m
+                        break
+
             if not target:
-                # fallback: first market with 2 outcomes
+                # fallback: first market with exactly 2 outcomes
                 for m in markets:
-                    outcomes = m.get("outcomes", [])
-                    prices   = m.get("outcomePrices", [])
+                    outcomes = _parse_str_or_list(m.get("outcomes", []))
+                    prices   = _parse_str_or_list(m.get("outcomePrices", []))
                     if len(outcomes) == 2 and len(prices) == 2:
                         target = m
                         break
@@ -88,8 +102,8 @@ def fetch_nhl_markets() -> list[dict]:
             if not target:
                 continue
 
-            outcomes = target.get("outcomes", [])
-            prices   = target.get("outcomePrices", [])
+            outcomes = _parse_str_or_list(target.get("outcomes", []))
+            prices   = _parse_str_or_list(target.get("outcomePrices", []))
             if len(outcomes) != 2 or len(prices) != 2:
                 continue
 
@@ -101,7 +115,6 @@ def fetch_nhl_markets() -> list[dict]:
             except (ValueError, TypeError):
                 continue
 
-            # Parse gameStartTime: "2026-03-21 21:00:00+00"
             game_start_str = target.get("gameStartTime") or event.get("startDate")
             if not game_start_str:
                 continue
@@ -112,7 +125,7 @@ def fetch_nhl_markets() -> list[dict]:
                 target["question"] = title
             results.append(target)
 
-        log.info(f"fetch_nhl_markets: {len(results)} moneyline markets from {len(events)} events")
+        log.info(f"fetch_nhl_markets: {len(results)} markets from {len(events)} events")
     except Exception as e:
         log.error(f"fetch_nhl_markets: {e}")
 
