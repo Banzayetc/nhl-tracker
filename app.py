@@ -174,7 +174,7 @@ def parse_market(m: dict) -> dict | None:
             return None
 
         return {
-            "market_id":   str(m.get("id") or m.get("conditionId") or ""),
+            "market_id":   str(m.get("conditionId") or m.get("id") or m.get("marketMakerAddress") or ""),
             "question":    m.get("question", ""),
             "team_a":      tokens[0].get("outcome", "Team A"),
             "team_b":      tokens[1].get("outcome", "Team B"),
@@ -625,12 +625,21 @@ def debug_force():
                 failures.append(f"{event.get('title')}: exception {e}")
             break
 
+    snapshot_markets()
+
+    with get_con() as con:
+        total = con.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
+        latest = con.execute(
+            "SELECT market_id, question, team_a, team_b, price_a, price_b FROM snapshots ORDER BY fetched_at DESC LIMIT 5"
+        ).fetchall()
+
     return jsonify({
-        "total_events":         len(events),
-        "vs_events":            len(vs_events),
-        "failures_sample":      failures[:15],
-        "would_save_inline":    saved,
-        "fetch_nhl_markets_count": len(fetch_nhl_markets()),
+        "total_events":              len(events),
+        "vs_events":                 len(vs_events),
+        "fetch_nhl_markets_count":   len(fetch_nhl_markets()),
+        "would_save_inline":         saved,
+        "db_total_after_snapshot":   total,
+        "db_latest":                 [dict(r) for r in latest],
     })
 
 @app.route("/debug/snapshots")
