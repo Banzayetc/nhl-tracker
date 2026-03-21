@@ -499,6 +499,15 @@ def index():
 def api_matches():
     return jsonify(get_trending_matches())
 
+@app.route("/cron")
+def cron():
+    """Called by UptimeRobot every 55 min as reliable snapshot trigger."""
+    snapshot_markets()
+    with get_con() as con:
+        total = con.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
+        unique = con.execute("SELECT COUNT(DISTINCT fetched_at) FROM snapshots").fetchone()[0]
+    return jsonify({"status": "ok", "total_snapshots": total, "unique_batches": unique})
+
 @app.route("/health")
 def health():
     return "ok", 200
@@ -664,13 +673,27 @@ def debug_snapshots():
 
 def _bootstrap():
     init_db()
-    scheduler = BackgroundScheduler(daemon=True)
-    scheduler.add_job(snapshot_markets, "interval", minutes=POLL_INTERVAL_MIN, id="snapshot")
-    scheduler.start()
-    log.info("Running initial snapshot …")
-    snapshot_markets()
+    try:
+        scheduler = BackgroundScheduler(daemon=True)
+        scheduler.add_job(
+            snapshot_markets,
+            "interval",
+            minutes=POLL_INTERVAL_MIN,
+            id="snapshot",
+            replace_existing=True,
+            max_instances=1,
+        )
+        scheduler.start()
+        log.info(f"Scheduler started, interval={POLL_INTERVAL_MIN}min")
+    except Exception as e:
+        log.error(f"Scheduler failed to start: {e}")
 
-# gunicorn starts with --workers 1, so this runs exactly once per process
+    log.info("Running initial snapshot …")
+    try:
+        snapshot_markets()
+    except Exception as e:
+        log.error(f"Initial snapshot failed: {e}")
+
 _bootstrap()
 
 if __name__ == "__main__":
