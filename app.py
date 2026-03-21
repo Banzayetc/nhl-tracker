@@ -539,6 +539,22 @@ def debug_api():
 def debug_force():
     """Force a snapshot right now and return detailed results."""
     now = int(time.time())
+
+    # First show raw events to debug fetch
+    try:
+        r = requests.get(
+            f"{GAMMA_BASE}/events",
+            params={"active": "true", "closed": "false", "tag_slug": "nhl", "limit": 100},
+            timeout=20,
+        )
+        data = r.json()
+        events = data if isinstance(data, list) else data.get("events", [])
+        titles = [e.get("title", "") for e in events]
+        vs_titles = [t for t in titles if "vs" in t]
+        vs_lower  = [t for t in titles if "vs" in t.lower()]
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
     markets = fetch_nhl_markets()
     saved = 0
     skipped = []
@@ -552,7 +568,7 @@ def debug_force():
 
             hours = (parsed["match_start"] - now) / 3600
             if hours < 0 or hours > 72:
-                skipped.append({"question": parsed["question"], "reason": f"hours_to_start={round(hours,1)} (outside 0-72h)"})
+                skipped.append({"question": parsed["question"], "reason": f"hours={round(hours,1)}"})
                 continue
 
             con.execute(
@@ -566,14 +582,13 @@ def debug_force():
             saved += 1
 
     return jsonify({
+        "total_events":    len(events),
+        "vs_exact":        len(vs_titles),
+        "vs_lower":        len(vs_lower),
+        "sample_titles":   titles[:10],
         "markets_fetched": len(markets),
         "saved":           saved,
-        "skipped":         skipped[:20],
-        "sample_markets":  [
-            {"question": m.get("question"), "gameStartTime": m.get("gameStartTime"),
-             "outcomes": m.get("outcomes"), "outcomePrices": m.get("outcomePrices")}
-            for m in markets[:5]
-        ],
+        "skipped":         skipped[:10],
     })
     """Shows how many snapshots are in DB and latest entries."""
     with get_con() as con:
