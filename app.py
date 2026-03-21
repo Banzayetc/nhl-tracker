@@ -31,6 +31,8 @@ def _parse_str_or_list(val):
             return []
     return []
 
+app = Flask(__name__)
+
 # ── Database ──────────────────────────────────────────────────────────────────
 
 def get_con() -> sqlite3.Connection:
@@ -626,6 +628,9 @@ def debug_force():
         "failures_sample": failures[:15],
         "would_save":      saved,
     })
+
+@app.route("/debug/snapshots")
+def debug_snapshots():
     """Shows how many snapshots are in DB and latest entries."""
     with get_con() as con:
         total = con.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
