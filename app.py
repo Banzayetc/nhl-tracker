@@ -102,11 +102,13 @@ def fetch_nhl_markets() -> list[dict]:
                         break
 
             if not target:
+                log.warning(f"no target for event: {title}")
                 continue
 
             outcomes = _parse_str_or_list(target.get("outcomes", []))
             prices   = _parse_str_or_list(target.get("outcomePrices", []))
             if len(outcomes) != 2 or len(prices) != 2:
+                log.warning(f"bad outcomes/prices for {title}: {len(outcomes)}/{len(prices)}")
                 continue
 
             try:
@@ -114,11 +116,13 @@ def fetch_nhl_markets() -> list[dict]:
                     {"outcome": outcomes[0], "price": float(prices[0])},
                     {"outcome": outcomes[1], "price": float(prices[1])},
                 ]
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as e:
+                log.warning(f"token parse error for {title}: {e}")
                 continue
 
             game_start_str = target.get("gameStartTime") or event.get("startDate")
             if not game_start_str:
+                log.warning(f"no gameStartTime for {title}")
                 continue
 
             target["tokens"]        = tokens
@@ -622,11 +626,11 @@ def debug_force():
             break
 
     return jsonify({
-        "total_events":    len(events),
-        "vs_events":       len(vs_events),
-        "detail":          results,
-        "failures_sample": failures[:15],
-        "would_save":      saved,
+        "total_events":         len(events),
+        "vs_events":            len(vs_events),
+        "failures_sample":      failures[:15],
+        "would_save_inline":    saved,
+        "fetch_nhl_markets_count": len(fetch_nhl_markets()),
     })
 
 @app.route("/debug/snapshots")
