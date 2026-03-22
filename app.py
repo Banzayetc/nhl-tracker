@@ -52,12 +52,18 @@ def init_db():
                 match_start INTEGER,
                 price_a     REAL,
                 price_b     REAL,
-                fetched_at  INTEGER NOT NULL
+                fetched_at  INTEGER NOT NULL,
+                event_slug  TEXT
             )
         """)
         con.execute(
             "CREATE INDEX IF NOT EXISTS idx_market_fetched ON snapshots(market_id, fetched_at)"
         )
+        # migrate existing DBs
+        try:
+            con.execute("ALTER TABLE snapshots ADD COLUMN event_slug TEXT")
+        except Exception:
+            pass
 
 # ── Polymarket API ────────────────────────────────────────────────────────────
 
@@ -127,6 +133,7 @@ def fetch_nhl_markets() -> list[dict]:
 
             target["tokens"]        = tokens
             target["gameStartTime"] = game_start_str
+            target["event_slug"]    = event.get("slug", "")
             if not target.get("question"):
                 target["question"] = title
             results.append(target)
@@ -181,6 +188,7 @@ def parse_market(m: dict) -> dict | None:
             "match_start": match_start,
             "price_a":     price_a,
             "price_b":     price_b,
+            "event_slug":  m.get("event_slug", ""),
         }
     except Exception as e:
         log.warning(f"parse_market error: {e}")
@@ -208,13 +216,14 @@ def snapshot_markets():
 
             con.execute(
                 """INSERT INTO snapshots
-                   (market_id, question, team_a, team_b, match_start, price_a, price_b, fetched_at)
-                   VALUES (?,?,?,?,?,?,?,?)""",
+                   (market_id, question, team_a, team_b, match_start, price_a, price_b, fetched_at, event_slug)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
                 (
                     parsed["market_id"], parsed["question"],
                     parsed["team_a"],   parsed["team_b"],
                     parsed["match_start"],
                     parsed["price_a"],  parsed["price_b"], now,
+                    parsed.get("event_slug", ""),
                 ),
             )
             saved += 1
@@ -248,7 +257,7 @@ def get_trending_matches() -> list[dict]:
         results = []
         for mid in market_ids:
             snaps = con.execute(
-                """SELECT price_a, price_b, fetched_at, question, team_a, team_b, match_start
+                """SELECT price_a, price_b, fetched_at, question, team_a, team_b, match_start, event_slug
                    FROM snapshots
                    WHERE market_id = ? AND fetched_at >= ?
                    ORDER BY fetched_at ASC""",
@@ -270,6 +279,9 @@ def get_trending_matches() -> list[dict]:
             fading_team   = last["team_b"] if delta_a > 0 else last["team_a"]
             hours_left    = round((last["match_start"] - now) / 3600, 1)
 
+            slug = last["event_slug"] or ""
+            polymarket_url = f"https://polymarket.com/sports/nhl/{slug}" if slug else "https://polymarket.com/sports/nhl"
+
             results.append(
                 {
                     "market_id":      mid,
@@ -283,6 +295,7 @@ def get_trending_matches() -> list[dict]:
                     "price_b":        round(last["price_b"], 3),
                     "trending_team":  trending_team,
                     "fading_team":    fading_team,
+                    "polymarket_url": polymarket_url,
                     "history": [
                         {"t": s["fetched_at"] * 1000, "p": round(s["price_a"], 3)}
                         for s in snaps
@@ -363,6 +376,16 @@ h1 { color: #00d4ff; font-size: 1.3rem; letter-spacing: 3px; }
 footer { margin-top: 32px; font-size: 0.7rem; color: #2a2a2a; text-align: right; }
 .mv-up   { color: #22c55e; font-weight: bold; }
 .mv-down { color: #ef4444; font-weight: bold; }
+.pm-link {
+  display: block;
+  margin-top: 12px;
+  font-size: 0.72rem;
+  color: #00d4ff55;
+  text-decoration: none;
+  letter-spacing: 1px;
+  transition: color 0.2s;
+}
+.pm-link:hover { color: #00d4ff; }
 </style>
 </head>
 <body>
@@ -441,6 +464,9 @@ if (!MATCHES.length) {
         <span>${m.team_b}: ${mvB}</span>
       </div>
       <canvas id="c${i}" height="90"></canvas>
+      <a class="pm-link" href="${m.polymarket_url}" target="_blank" rel="noopener">
+        ↗ открыть на Polymarket
+      </a>
     `;
     grid.appendChild(card);
 
