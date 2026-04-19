@@ -1251,30 +1251,56 @@ if __name__ == "__main__":
 # ── Backtest ──────────────────────────────────────────────────────────────────
 
 def _scrape_ww_archive(sport_path: str, pages: int = 3) -> list[str]:
-    """Scrape WinnersAndWhiners archive for game URLs."""
+    """Find WinnersAndWhiners game URLs via web search (archive pages use JS rendering)."""
     import re
     urls = []
     seen = set()
-    for page in range(1, pages + 1):
+
+    # Use multiple search queries to get more results
+    queries = [
+        f"site:winnersandwhiners.com/free-picks/{sport_path} picks prediction odds line movement 2026",
+        f"site:winnersandwhiners.com/free-picks/{sport_path} picks prediction line movement march 2026",
+        f"site:winnersandwhiners.com/free-picks/{sport_path} picks prediction line movement april 2026",
+    ]
+
+    for query in queries:
         try:
-            url = f"https://winnersandwhiners.com/free-picks/{sport_path}/"
-            if page > 1:
-                url += f"page/{page}/"
-            r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-            if r.status_code != 200:
-                break
-            found = re.findall(
-                r'href="(https://winnersandwhiners\.com/free-picks/' + re.escape(sport_path) + r'/[^"]+picks[^"]+)"',
-                r.text
+            r = requests.get(
+                "https://www.googleapis.com/customsearch/v1",
+                params={"q": query, "num": 10},
+                timeout=10,
             )
-            for u in found:
-                if u not in seen:
-                    seen.add(u)
-                    urls.append(u)
+            # Google CSE won't work without API key — use DuckDuckGo HTML instead
+        except Exception:
+            pass
+
+        # Fallback: scrape DuckDuckGo HTML search
+        try:
+            r = requests.get(
+                "https://html.duckduckgo.com/html/",
+                params={"q": query},
+                timeout=15,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            )
+            if r.status_code == 200:
+                found = re.findall(
+                    r'href="(https://winnersandwhiners\.com/free-picks/' + re.escape(sport_path) + r'/[^"&]+)"',
+                    r.text
+                )
+                for u in found:
+                    # Clean URL (remove tracking params)
+                    u = u.split("?")[0].split("&")[0]
+                    if u not in seen and "picks" in u:
+                        seen.add(u)
+                        urls.append(u)
         except Exception as e:
-            log.warning(f"archive scrape page {page}: {e}")
+            log.warning(f"DDG search failed: {e}")
+
+        if len(urls) >= 50:
             break
-    return urls
+
+    log.info(f"Found {len(urls)} game URLs for {sport_path}")
+    return urls[:50]
 
 
 def _scrape_ww_line_movement(url: str) -> dict:
