@@ -28,7 +28,7 @@ SPORTS = [
     {"key": "bundesliga",     "tag": "bundesliga",     "name": "Bundesliga","emoji": "⚽", "url_path": "bundesliga"},
     {"key": "serie-a",        "tag": "serie-a",        "name": "Serie A",   "emoji": "⚽", "url_path": "serie-a"},
     {"key": "ligue-1",        "tag": "ligue-1",        "name": "Ligue 1",   "emoji": "⚽", "url_path": "ligue-1"},
-    {"key": "baseball",       "tag": "mlb",            "name": "Baseball",  "emoji": "⚾", "url_path": "mlb"},
+    {"key": "baseball",       "tag": "baseball",       "name": "Baseball",  "emoji": "⚾", "url_path": "mlb"},
 ]
 
 app = Flask(__name__)
@@ -130,9 +130,13 @@ def fetch_sport_markets(tag: str) -> list[dict]:
             except (ValueError, TypeError):
                 continue
 
-            # Skip Yes/No markets — we want team name matchups only
+            # Skip Yes/No markets that are futures (e.g. "Will X win the league?")
+            # But keep team matchups where outcomes happen to be Yes/No
             yes_no = {"yes", "no"}
-            if {outcomes[0].lower(), outcomes[1].lower()} == yes_no:
+            question_lower = (target.get("question") or title).lower()
+            is_yes_no = {outcomes[0].lower(), outcomes[1].lower()} == yes_no
+            is_future  = is_yes_no and any(w in question_lower for w in ["will ", "win the ", "champion", "qualify"])
+            if is_future:
                 continue
 
             gst = target.get("gameStartTime") or event.get("startDate")
