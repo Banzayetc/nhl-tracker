@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime
 
 import requests
-from flask import Flask, render_template_string, jsonify
+from flask import Flask, render_template_string, jsonify, request
 from apscheduler.schedulers.background import BackgroundScheduler
 
 import json as _json
@@ -643,7 +643,202 @@ def cron():
         unique = con.execute("SELECT COUNT(DISTINCT fetched_at) FROM snapshots").fetchone()[0]
     return jsonify({"status": "ok", "total": total, "batches": unique})
 
-@app.route("/debug/snapshots")
+@app.route("/history")
+def history():
+    """
+    Analyse how often a monotone trend held until match start for a given team.
+    Usage: /history?team=Rangers&n=15&sport=nhl
+    """
+    team  = request.args.get("team", "").strip()
+    n     = min(int(request.args.get("n", 15)), 30)
+    sport = request.args.get("sport", "")
+
+    if not team:
+        return jsonify({"error": "team parameter required. Example: /history?team=Rangers"}), 400
+
+    # ── Step 1: find closed events with this team ──────────────────────────────
+    tag_list = [sport] if sport else [s["tag"] for s in SPORTS]
+    candidate_events = []
+
+    for tag in tag_list:
+        try:
+            r = requests.get(
+                f"{GAMMA_BASE}/events",
+                params={"active": "false", "closed": "true", "tag_slug": tag, "limit": 100},
+                timeout=20,
+            )
+            data = r.json()
+            events = data if isinstance(data, list) else data.get("events", [])
+            for e in events:
+                title = e.get("title", "")
+                if team.lower() in title.lower() and "vs" in title.lower():
+                    e["_sport"] = tag
+                    candidate_events.append(e)
+        except Exception as ex:
+            log.warning(f"history fetch error for tag {tag}: {ex}")
+
+    # Sort by startDate desc, take last n
+    candidate_events.sort(key=lambda e: e.get("startDate") or "", reverse=True)
+    candidate_events = candidate_events[:n]
+
+    if not candidate_events:
+        return jsonify({
+            "team": team,
+            "matches_found": 0,
+            "message": "No closed matches found for this team",
+        })
+
+    # ── Step 2: for each event get market price history ────────────────────────
+    results = []
+    trend_held = 0
+    trend_total = 0
+
+    for event in candidate_events:
+        title   = event.get("title", "")
+        markets = event.get("markets", [])
+
+        # Find moneyline market
+        target = None
+        for m in markets:
+            q        = (m.get("question") or "").lower()
+            outcomes = _parse_list(m.get("outcomes", []))
+            prices   = _parse_list(m.get("outcomePrices", []))
+            if len(outcomes) == 2 and len(prices) == 2:
+                if "moneyline" in q or q == title.lower():
+                    target = m
+                    break
+        if not target:
+            for m in markets:
+                outcomes = _parse_list(m.get("outcomes", []))
+                prices   = _parse_list(m.get("outcomePrices", []))
+                if len(outcomes) == 2 and len(prices) == 2:
+                    target = m
+                    break
+        if not target:
+            continue
+
+        # Get price history for this market
+        market_id = target.get("id") or target.get("conditionId")
+        if not market_id:
+            continue
+
+        try:
+            h = requests.get(
+                f"{GAMMA_BASE}/prices-history",
+                params={"market": market_id, "interval": "1h", "fidelity": 60},
+                timeout=20,
+            )
+            hist_data = h.json()
+            history_points = hist_data if isinstance(hist_data, list) else hist_data.get("history", [])
+        except Exception:
+            continue
+
+        if len(history_points) < 4:
+            continue
+
+        # Parse game start time
+        gst = target.get("gameStartTime") or event.get("startDate")
+        if not gst:
+            continue
+        try:
+            gst = gst.strip().replace(" ", "T")
+            if gst.endswith("+00"):
+                gst += ":00"
+            match_start_ts = int(datetime.fromisoformat(gst).timestamp())
+        except Exception:
+            continue
+
+        # Filter: only points in window 12-48h before match start
+        window_end   = match_start_ts - 12 * 3600
+        window_start = match_start_ts - 48 * 3600
+
+        window_pts = [
+            pt for pt in history_points
+            if window_start <= int(pt.get("t", 0)) <= window_end
+        ]
+
+        if len(window_pts) < 3:
+            results.append({
+                "title":       title,
+                "start":       event.get("startDate"),
+                "trend":       None,
+                "held":        None,
+                "reason":      f"not enough data in window ({len(window_pts)} pts)",
+            })
+            continue
+
+        prices_in_window = [float(pt.get("p", 0.5)) for pt in window_pts]
+        first_p = prices_in_window[0]
+        last_p  = prices_in_window[-1]
+        delta   = last_p - first_p
+
+        # Check if there was a trend at all
+        if abs(delta) < TREND_MIN_DELTA:
+            results.append({
+                "title":  title,
+                "start":  event.get("startDate"),
+                "trend":  None,
+                "held":   None,
+                "reason": f"no trend (delta={round(delta*100,1)}¢)",
+            })
+            continue
+
+        direction = 1 if delta > 0 else -1
+        monotone  = is_monotone(prices_in_window, direction, MAX_PULLBACK)
+
+        if not monotone:
+            results.append({
+                "title":  title,
+                "start":  event.get("startDate"),
+                "trend":  None,
+                "held":   None,
+                "reason": "trend not monotone (too many reversals)",
+            })
+            continue
+
+        # Trend existed — now check if it held until match start
+        # Take last 2 points before match start (last 2h)
+        final_pts = [
+            pt for pt in history_points
+            if match_start_ts - 2 * 3600 <= int(pt.get("t", 0)) <= match_start_ts
+        ]
+
+        held = False
+        if final_pts:
+            final_price = float(final_pts[-1].get("p", 0.5))
+            # Trend held if final price moved further in same direction vs window start
+            held = (direction == 1 and final_price > first_p + TREND_MIN_DELTA / 2) or \
+                   (direction == -1 and final_price < first_p - TREND_MIN_DELTA / 2)
+
+        trend_total += 1
+        if held:
+            trend_held += 1
+
+        team_trending = target.get("outcomes", [])[0] if direction == 1 else target.get("outcomes", [])[-1]
+        if isinstance(team_trending, str) and "[" in team_trending:
+            outcomes = _parse_list(team_trending)
+            team_trending = outcomes[0] if direction == 1 else outcomes[-1]
+
+        results.append({
+            "title":     title,
+            "start":     event.get("startDate"),
+            "trend":     f"{'▲' if direction == 1 else '▼'} {round(abs(delta)*100,1)}¢",
+            "direction": "up" if direction == 1 else "down",
+            "held":      held,
+            "delta_cents": round(delta * 100, 1),
+        })
+
+    pct = round(trend_held / trend_total * 100) if trend_total > 0 else None
+
+    return jsonify({
+        "team":           team,
+        "matches_checked": len(candidate_events),
+        "matches_with_trend": trend_total,
+        "trend_held_count":   trend_held,
+        "trend_held_pct":     pct,
+        "summary": f"{trend_held}/{trend_total} трендов сохранились до матча ({pct}%)" if pct is not None else "Нет матчей с трендом",
+        "matches": results,
+    })
 def debug_snapshots():
     with get_con() as con:
         total  = con.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
