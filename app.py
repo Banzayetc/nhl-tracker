@@ -643,12 +643,237 @@ def cron():
         unique = con.execute("SELECT COUNT(DISTINCT fetched_at) FROM snapshots").fetchone()[0]
     return jsonify({"status": "ok", "total": total, "batches": unique})
 
+def _american_to_prob(odds: float) -> float:
+    """Convert American moneyline odds to implied probability (0-1)."""
+    if odds < 0:
+        return abs(odds) / (abs(odds) + 100)
+    else:
+        return 100 / (odds + 100)
+
+
+def _scrape_ww_game(url: str) -> list[dict]:
+    """
+    Scrape line movement table from a WinnersAndWhiners game page.
+    Returns list of {ts, prob_a} dicts sorted by timestamp asc.
+    """
+    try:
+        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return []
+        html = r.text
+
+        # Find "Line Movement - Puck Line" or "Line Movement - Moneyline" table
+        import re
+        # Extract all table rows after the line movement header
+        # Pattern: date | time | team_a_odds | team_b_odds
+        rows = re.findall(
+            r'<tr[^>]*>\s*<td[^>]*>([\d/]+)</td>\s*<td[^>]*>([\d:AP\s]+M?)</td>\s*<td[^>]*>([+\-]?\d+)</td>\s*<td[^>]*>([+\-]?\d+)</td>',
+            html
+        )
+        if not rows:
+            return []
+
+        points = []
+        for date_str, time_str, odds_a, odds_b in rows:
+            try:
+                # Parse date/time — year inferred from context
+                dt_str = f"{date_str} {time_str.strip()} 2026"
+                from datetime import datetime as dt
+                # Try parsing "03/16 08:33:17 AM 2026"
+                parsed = dt.strptime(dt_str, "%m/%d %I:%M:%S %p %Y")
+                ts = int(parsed.timestamp())
+                prob_a = _american_to_prob(float(odds_a))
+                points.append({"ts": ts, "prob": prob_a})
+            except Exception:
+                continue
+
+        return sorted(points, key=lambda x: x["ts"])
+    except Exception as e:
+        log.warning(f"scrape_ww_game error: {e}")
+        return []
+
+
+def _find_ww_game_urls(team: str, sport: str, n: int) -> list[dict]:
+    """
+    Search WinnersAndWhiners archive for past games with this team.
+    Returns list of {title, url, date}.
+    """
+    sport_path = {
+        "nhl": "nhl", "nba": "nba", "epl": "soccer",
+        "baseball": "mlb", "bundesliga": "soccer",
+        "la-liga": "soccer", "serie-a": "soccer", "ligue-1": "soccer",
+    }.get(sport, sport)
+
+    archive_url = f"https://winnersandwhiners.com/free-picks/{sport_path}"
+    results = []
+    try:
+        import re
+        r = requests.get(archive_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return []
+
+        # Find all article links containing team name
+        links = re.findall(
+            r'href="(https://winnersandwhiners\.com/free-picks/[^"]+picks[^"]+)"[^>]*>([^<]*' + re.escape(team) + r'[^<]*)<',
+            r.text, re.IGNORECASE
+        )
+
+        # Also search broader — find all links with team name in URL
+        url_links = re.findall(
+            r'href="(https://winnersandwhiners\.com/free-picks/[^"]*' + re.escape(team.lower().replace(" ", "-")) + r'[^"]*)"',
+            r.text, re.IGNORECASE
+        )
+
+        seen = set()
+        for url in url_links:
+            if url not in seen:
+                seen.add(url)
+                results.append({"url": url, "title": url.split("/")[-1]})
+            if len(results) >= n:
+                break
+
+    except Exception as e:
+        log.warning(f"find_ww_game_urls error: {e}")
+
+    return results[:n]
+
+
 @app.route("/history")
 def history():
     """
-    Analyse past matches for a team using our own snapshots.
+    Analyse past matches for a team using WinnersAndWhiners line movement.
+    Converts American odds → implied probability, runs monotonicity check.
     Usage: /history?team=Rangers&n=15&sport=nhl
     """
+    team  = request.args.get("team", "").strip()
+    n     = min(int(request.args.get("n", 15)), 20)
+    sport = request.args.get("sport", "nhl")
+
+    if not team:
+        return jsonify({"error": "team parameter required. Example: /history?team=Rangers&sport=nhl"}), 400
+
+    # Step 1: find game URLs
+    game_urls = _find_ww_game_urls(team, sport, n)
+
+    if not game_urls:
+        return jsonify({
+            "team": team,
+            "sport": sport,
+            "matches_found": 0,
+            "message": f"No past matches found for '{team}' on WinnersAndWhiners. Try exact team name (e.g. Rangers, Avalanche).",
+        })
+
+    # Step 2: scrape each game and analyse
+    results = []
+    trend_total = 0
+    trend_held  = 0
+
+    for game in game_urls:
+        url   = game["url"]
+        title = game["title"].replace("-", " ").title()
+
+        points = _scrape_ww_game(url)
+
+        if len(points) < 3:
+            results.append({
+                "title":  title,
+                "url":    url,
+                "trend":  None,
+                "reason": f"not enough line movement data ({len(points)} points)",
+            })
+            continue
+
+        # Find match start = last timestamp + ~1h (approximate)
+        # Use window: points more than 12h before last point
+        last_ts   = points[-1]["ts"]
+        first_ts  = points[0]["ts"]
+        span_h    = (last_ts - first_ts) / 3600
+
+        # Filter: take points in 12-48h window before match
+        # Approximate match start = last_ts + 2h
+        approx_start = last_ts + 2 * 3600
+        window_pts = [
+            p for p in points
+            if approx_start - 48 * 3600 <= p["ts"] <= approx_start - 12 * 3600
+        ]
+
+        if len(window_pts) < 3:
+            # Use all points if window is too narrow
+            window_pts = points
+
+        if len(window_pts) < 2:
+            results.append({
+                "title":  title,
+                "url":    url,
+                "trend":  None,
+                "reason": "insufficient data in 12-48h window",
+            })
+            continue
+
+        probs   = [p["prob"] for p in window_pts]
+        first_p = probs[0]
+        last_p  = probs[-1]
+        delta   = last_p - first_p
+
+        if abs(delta) < TREND_MIN_DELTA:
+            results.append({
+                "title":       title,
+                "url":         url,
+                "trend":       None,
+                "reason":      f"no trend (delta={round(delta*100,1)}¢)",
+                "delta_cents": round(delta * 100, 1),
+                "span_hours":  round(span_h, 1),
+            })
+            continue
+
+        direction = 1 if delta > 0 else -1
+        monotone  = is_monotone(probs, direction, MAX_PULLBACK)
+
+        if not monotone:
+            results.append({
+                "title":       title,
+                "url":         url,
+                "trend":       None,
+                "reason":      f"not monotone (delta={round(delta*100,1)}¢, reversal > {MAX_PULLBACK*100}¢)",
+                "delta_cents": round(delta * 100, 1),
+            })
+            continue
+
+        # Trend found — check if it held to match start (last point in data)
+        final_prob = points[-1]["prob"]
+        held = (direction == 1 and final_prob > first_p + TREND_MIN_DELTA / 2) or \
+               (direction == -1 and final_prob < first_p - TREND_MIN_DELTA / 2)
+
+        trend_total += 1
+        if held:
+            trend_held += 1
+
+        results.append({
+            "title":       title,
+            "url":         url,
+            "trend":       f"{'▲' if direction==1 else '▼'} {round(abs(delta)*100,1)}¢",
+            "delta_cents": round(delta * 100, 1),
+            "first_prob":  round(first_p * 100, 1),
+            "last_prob":   round(last_p * 100, 1),
+            "final_prob":  round(final_prob * 100, 1),
+            "held":        held,
+            "span_hours":  round(span_h, 1),
+            "data_points": len(window_pts),
+        })
+
+    pct = round(trend_held / trend_total * 100) if trend_total > 0 else None
+
+    return jsonify({
+        "team":               team,
+        "sport":              sport,
+        "matches_checked":    len(game_urls),
+        "matches_with_trend": trend_total,
+        "trend_held_count":   trend_held,
+        "trend_held_pct":     pct,
+        "summary":            f"{trend_held}/{trend_total} трендов сохранились до матча ({pct}%)" if pct is not None else "Нет матчей с монотонным трендом",
+        "note":               "Источник: WinnersAndWhiners. Американские коэффициенты → implied probability.",
+        "matches":            results,
+    })
     team  = request.args.get("team", "").strip()
     n     = min(int(request.args.get("n", 15)), 30)
     sport = request.args.get("sport", "")
@@ -1021,3 +1246,260 @@ _bootstrap()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
+
+
+# ── Backtest ──────────────────────────────────────────────────────────────────
+
+def _scrape_ww_archive(sport_path: str, pages: int = 3) -> list[str]:
+    """Scrape WinnersAndWhiners archive for game URLs."""
+    import re
+    urls = []
+    seen = set()
+    for page in range(1, pages + 1):
+        try:
+            url = f"https://winnersandwhiners.com/free-picks/{sport_path}/"
+            if page > 1:
+                url += f"page/{page}/"
+            r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code != 200:
+                break
+            found = re.findall(
+                r'href="(https://winnersandwhiners\.com/free-picks/' + re.escape(sport_path) + r'/[^"]+picks[^"]+)"',
+                r.text
+            )
+            for u in found:
+                if u not in seen:
+                    seen.add(u)
+                    urls.append(u)
+        except Exception as e:
+            log.warning(f"archive scrape page {page}: {e}")
+            break
+    return urls
+
+
+def _scrape_ww_line_movement(url: str) -> dict:
+    """
+    Scrape line movement table from WinnersAndWhiners game page.
+    Returns {match_start_ts, points: [{ts, prob_home, prob_away}]}
+    """
+    import re
+    try:
+        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return {}
+        html = r.text
+
+        # Extract game date from URL or page title
+        # URL pattern: ...-for-[day]-[month]-[date]-[year]
+        date_match = re.search(r'for-\w+-(\w+)-(\d+)-(\d{4})', url)
+        game_date = None
+        if date_match:
+            month_str = date_match.group(1)
+            day = int(date_match.group(2))
+            year = int(date_match.group(3))
+            months = {"january":1,"february":2,"march":3,"april":4,"may":5,
+                      "june":6,"july":7,"august":8,"september":9,"october":10,
+                      "november":11,"december":12}
+            month = months.get(month_str.lower())
+            if month:
+                game_date = datetime(year, month, day)
+
+        # Find line movement table rows
+        # Pattern: date | time | team_a | team_b
+        rows = re.findall(
+            r'<tr[^>]*>\s*<td[^>]*>([\d/]+)</td>\s*<td[^>]*>([\d:APM\s]+)</td>\s*<td[^>]*>([+\-]?\d+)</td>\s*<td[^>]*>([+\-]?\d+)</td>',
+            html
+        )
+
+        if not rows:
+            return {}
+
+        points = []
+        for date_str, time_str, odds_a, odds_b in rows:
+            try:
+                time_str = time_str.strip()
+                # Parse "03/16 08:33:17 AM"
+                if game_date:
+                    year = game_date.year
+                else:
+                    year = 2026
+                dt_str = f"{date_str} {time_str} {year}"
+                parsed = datetime.strptime(dt_str, "%m/%d %I:%M:%S %p %Y")
+                ts = int(parsed.timestamp())
+                prob_a = _american_to_prob(float(odds_a))
+                prob_b = _american_to_prob(float(odds_b))
+                points.append({"ts": ts, "prob_a": prob_a, "prob_b": prob_b})
+            except Exception:
+                continue
+
+        if not points:
+            return {}
+
+        points = sorted(points, key=lambda x: x["ts"])
+
+        # Estimate match start: last point + 2h (approximate)
+        match_start_ts = points[-1]["ts"] + 2 * 3600
+        if game_date:
+            # Use game date + typical kickoff 20:00 UTC as better estimate
+            match_start_ts = int(game_date.timestamp()) + 20 * 3600
+
+        return {
+            "url":            url,
+            "match_start_ts": match_start_ts,
+            "points":         points,
+        }
+
+    except Exception as e:
+        log.warning(f"scrape_ww_line_movement error for {url}: {e}")
+        return {}
+
+
+def _check_trend_at_checkpoint(points: list, match_start: int,
+                                hours_before: float,
+                                direction: int, first_prob: float) -> bool:
+    """
+    Check if trend is still alive X hours before match start.
+    Alive = price still moving in original direction vs starting point.
+    """
+    checkpoint_ts = match_start - int(hours_before * 3600)
+    # Find last point at or before checkpoint
+    candidates = [p for p in points if p["ts"] <= checkpoint_ts]
+    if not candidates:
+        return False
+    cp_prob = candidates[-1]["prob_a"]
+    if direction == 1:
+        return cp_prob > first_prob + TREND_MIN_DELTA / 2
+    else:
+        return cp_prob < first_prob - TREND_MIN_DELTA / 2
+
+
+@app.route("/backtest")
+def backtest():
+    """
+    Backtest monotone trend strategy on WinnersAndWhiners line movement data.
+    Usage: /backtest?sport=soccer&n=50
+    Checks: how often a monotone trend holds at 12h, 6h, 4h, 2h, 1h before match.
+    """
+    sport     = request.args.get("sport", "soccer")
+    n         = min(int(request.args.get("n", 50)), 100)
+
+    sport_paths = {
+        "nhl":    "nhl",
+        "nba":    "nba",
+        "soccer": "soccer",
+        "epl":    "soccer",
+    }
+    sport_path = sport_paths.get(sport, sport)
+
+    # Step 1: get archive URLs
+    log.info(f"Backtest: scraping {sport_path} archive for {n} games...")
+    all_urls = _scrape_ww_archive(sport_path, pages=5)
+    urls = all_urls[:n]
+
+    if not urls:
+        return jsonify({
+            "error": f"No game URLs found for sport={sport}. Check sport name.",
+            "tried": f"https://winnersandwhiners.com/free-picks/{sport_path}/",
+        })
+
+    # Step 2: scrape each game
+    CHECKPOINTS = [12, 6, 4, 2, 1]  # hours before match
+    total_games     = 0
+    with_trend      = 0
+    held_at = {h: 0 for h in CHECKPOINTS}
+    matches = []
+
+    for url in urls:
+        data = _scrape_ww_line_movement(url)
+        if not data or len(data.get("points", [])) < 3:
+            continue
+
+        total_games += 1
+        points      = data["points"]
+        match_start = data["match_start_ts"]
+        now_ts      = int(time.time())
+
+        # Only analyse past matches
+        if match_start > now_ts:
+            continue
+
+        # Get points in 12-48h window before match
+        window_pts = [
+            p for p in points
+            if match_start - 48 * 3600 <= p["ts"] <= match_start - 12 * 3600
+        ]
+        if len(window_pts) < 3:
+            window_pts = points  # fallback: use all
+
+        if len(window_pts) < 2:
+            continue
+
+        probs    = [p["prob_a"] for p in window_pts]
+        first_p  = probs[0]
+        last_p   = probs[-1]
+        delta    = last_p - first_p
+
+        # Must have minimum delta
+        if abs(delta) < TREND_MIN_DELTA:
+            matches.append({
+                "url":    url.split("/")[-1][:60],
+                "trend":  None,
+                "reason": f"no trend (Δ={round(delta*100,1)}¢)",
+            })
+            continue
+
+        direction = 1 if delta > 0 else -1
+        monotone  = is_monotone(probs, direction, MAX_PULLBACK)
+
+        if not monotone:
+            matches.append({
+                "url":    url.split("/")[-1][:60],
+                "trend":  None,
+                "reason": f"not monotone (Δ={round(delta*100,1)}¢)",
+            })
+            continue
+
+        # Trend found — check each checkpoint
+        with_trend += 1
+        cp_results = {}
+        for h in CHECKPOINTS:
+            alive = _check_trend_at_checkpoint(
+                points, match_start, h, direction, first_p
+            )
+            cp_results[f"{h}h"] = alive
+            if alive:
+                held_at[h] += 1
+
+        matches.append({
+            "url":       url.split("/")[-1][:60],
+            "trend":     f"{'▲' if direction==1 else '▼'} {round(abs(delta)*100,1)}¢",
+            "direction": "up" if direction == 1 else "down",
+            "delta":     round(delta * 100, 1),
+            "checkpoints": cp_results,
+        })
+
+    # Step 3: build summary
+    breakdown = {}
+    for h in CHECKPOINTS:
+        count = held_at[h]
+        pct   = round(count / with_trend * 100) if with_trend > 0 else None
+        breakdown[f"{h}h_before_match"] = {
+            "held":  count,
+            "total": with_trend,
+            "pct":   pct,
+        }
+
+    return jsonify({
+        "sport":           sport,
+        "games_scraped":   total_games,
+        "with_trend":      with_trend,
+        "trend_rate":      f"{round(with_trend/total_games*100)}% матчей имели монотонный тренд" if total_games > 0 else None,
+        "breakdown":       breakdown,
+        "interpretation":  "pct = % трендов которые были живы в данной точке. Чем выше % за Xh — тем лучше входить именно там.",
+        "params": {
+            "min_delta_cents": round(TREND_MIN_DELTA * 100, 1),
+            "max_pullback_cents": round(MAX_PULLBACK * 100, 1),
+            "trend_window": "12-48h before match",
+        },
+        "matches": matches,
+    })
