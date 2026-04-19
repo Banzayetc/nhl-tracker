@@ -20,15 +20,15 @@ MAX_PULLBACK      = float(os.environ.get("MAX_PULLBACK", "0.015"))      # 1.5¢ 
 GAMMA_BASE        = "https://gamma-api.polymarket.com"
 
 SPORTS = [
-    {"key": "nhl",      "tag": "nhl",      "name": "NHL",      "emoji": "🏒", "url_path": "nhl"},
-    {"key": "nba",      "tag": "nba",      "name": "NBA",      "emoji": "🏀", "url_path": "nba"},
-    {"key": "epl",          "tag": "epl",          "name": "EPL",       "emoji": "⚽", "url_path": "epl"},
-    {"key": "champions-league", "tag": "champions-league", "name": "UCL",  "emoji": "🏆", "url_path": "champions-league"},
-    {"key": "la-liga",      "tag": "la-liga",      "name": "La Liga",   "emoji": "⚽", "url_path": "la-liga"},
-    {"key": "bundesliga",   "tag": "bundesliga",   "name": "Bundesliga","emoji": "⚽", "url_path": "bundesliga"},
-    {"key": "serie-a",      "tag": "serie-a",      "name": "Serie A",   "emoji": "⚽", "url_path": "serie-a"},
-    {"key": "ligue-1",      "tag": "ligue-1",      "name": "Ligue 1",   "emoji": "⚽", "url_path": "ligue-1"},
-    {"key": "baseball", "tag": "baseball", "name": "Baseball", "emoji": "⚾", "url_path": "mlb"},
+    {"key": "nhl",            "tag": "nhl",            "name": "NHL",       "emoji": "🏒", "url_path": "nhl"},
+    {"key": "nba",            "tag": "nba",            "name": "NBA",       "emoji": "🏀", "url_path": "nba"},
+    {"key": "epl",            "tag": "epl",            "name": "EPL",       "emoji": "⚽", "url_path": "epl"},
+    {"key": "champions-league","tag": "champions-league","name": "UCL",     "emoji": "🏆", "url_path": "champions-league"},
+    {"key": "la-liga",        "tag": "la-liga",        "name": "La Liga",   "emoji": "⚽", "url_path": "la-liga"},
+    {"key": "bundesliga",     "tag": "bundesliga",     "name": "Bundesliga","emoji": "⚽", "url_path": "bundesliga"},
+    {"key": "serie-a",        "tag": "serie-a",        "name": "Serie A",   "emoji": "⚽", "url_path": "serie-a"},
+    {"key": "ligue-1",        "tag": "ligue-1",        "name": "Ligue 1",   "emoji": "⚽", "url_path": "ligue-1"},
+    {"key": "baseball",       "tag": "mlb",            "name": "Baseball",  "emoji": "⚾", "url_path": "mlb"},
 ]
 
 app = Flask(__name__)
@@ -128,6 +128,11 @@ def fetch_sport_markets(tag: str) -> list[dict]:
                     {"outcome": outcomes[1], "price": float(prices[1])},
                 ]
             except (ValueError, TypeError):
+                continue
+
+            # Skip Yes/No markets — we want team name matchups only
+            yes_no = {"yes", "no"}
+            if {outcomes[0].lower(), outcomes[1].lower()} == yes_no:
                 continue
 
             gst = target.get("gameStartTime") or event.get("startDate")
@@ -413,34 +418,34 @@ h1 { color: #00d4ff; font-size: 1.2rem; letter-spacing: 3px; margin-bottom: 4px;
   padding: 2px 10px;
   margin-bottom: 10px;
 }
-.teams { font-size: 0.95rem; font-weight: bold; margin-bottom: 3px; }
+.teams { font-size: 0.95rem; font-weight: bold; margin-bottom: 3px; color: #e0e0e0; }
 .vs { color: #2a2a2a; margin: 0 6px; }
-.match-time { font-size: 0.68rem; color: #444; margin-bottom: 10px; }
+.match-time { font-size: 0.68rem; color: #666; margin-bottom: 10px; }
 .delta { font-size: 1.3rem; font-weight: bold; margin-bottom: 3px; }
-.delta.up { color: #22c55e; }
-.delta.down { color: #ef4444; }
-.trend-label { font-size: 0.72rem; color: #555; margin-bottom: 12px; }
-.trend-label strong { color: #999; }
+.delta.up { color: #4ade80; }
+.delta.down { color: #f87171; }
+.trend-label { font-size: 0.72rem; color: #777; margin-bottom: 12px; }
+.trend-label strong { color: #d0d0d0; }
 .prices { display: flex; gap: 8px; font-size: 0.72rem; margin-bottom: 14px; flex-wrap: wrap; }
 .prices span {
-  background: #161616;
-  border: 1px solid #1e1e1e;
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
   padding: 3px 10px;
   border-radius: 5px;
-  color: #777;
+  color: #aaa;
 }
-.mv-up   { color: #22c55e; font-weight: bold; }
-.mv-down { color: #ef4444; font-weight: bold; }
+.mv-up   { color: #4ade80; font-weight: bold; }
+.mv-down { color: #f87171; font-weight: bold; }
 .pm-link {
   display: block;
   margin-top: 10px;
-  font-size: 0.68rem;
-  color: #00d4ff33;
+  font-size: 0.72rem;
+  color: #00d4ffcc;
   text-decoration: none;
   letter-spacing: 1px;
   transition: color 0.15s;
 }
-.pm-link:hover { color: #00d4ff; }
+.pm-link:hover { color: #00d4ff; text-decoration: underline; }
 .empty {
   text-align: center;
   padding: 60px 20px;
