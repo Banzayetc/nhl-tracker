@@ -711,46 +711,44 @@ def history():
         if not target:
             continue
 
-        # Use built-in price change fields
-        # oneDayPriceChange = change over last 24h before close
-        # positive = team_a rising, negative = team_a falling
-        day_change  = target.get("oneDayPriceChange")   # last 24h
-        week_change = target.get("oneWeekPriceChange")  # last 7 days
-        volume      = float(target.get("volumeNum") or target.get("volume") or 0)
+        # Closed markets have: oneWeekPriceChange, oneMonthPriceChange (no oneDayPriceChange)
+        week_change  = target.get("oneWeekPriceChange")
+        month_change = target.get("oneMonthPriceChange")
+        volume       = float(target.get("volumeNum") or target.get("volume") or 0)
 
-        if day_change is None:
+        if week_change is None:
             results.append({
                 "title":  title,
                 "start":  event.get("startDate"),
                 "trend":  None,
-                "reason": "no price change data",
+                "reason": "no price change data available",
                 "volume": round(volume),
             })
             continue
 
-        day_change  = float(day_change)
-        week_change = float(week_change) if week_change is not None else None
+        week_change  = float(week_change)
+        month_change = float(month_change) if month_change is not None else None
 
-        # Trend exists if 24h change >= threshold
-        if abs(day_change) < TREND_MIN_DELTA:
+        # Trend exists if weekly change >= threshold
+        if abs(week_change) < TREND_MIN_DELTA:
             results.append({
-                "title":       title,
-                "start":       event.get("startDate"),
-                "trend":       None,
-                "reason":      f"no trend (24h change={round(day_change*100,1)}¢)",
-                "volume":      round(volume),
-                "day_change":  round(day_change * 100, 1),
+                "title":      title,
+                "start":      event.get("startDate"),
+                "trend":      None,
+                "reason":     f"no trend (week change={round(week_change*100,1)}¢)",
+                "volume":     round(volume),
+                "week_change": round(week_change * 100, 1),
             })
             continue
 
-        direction = 1 if day_change > 0 else -1
+        direction = 1 if week_change > 0 else -1
         outcomes  = _parse_list(target.get("outcomes", []))
-        trending_team = outcomes[0] if direction == 1 else outcomes[-1] if outcomes else "?"
+        trending_team = outcomes[0] if direction == 1 else outcomes[-1] if len(outcomes) > 1 else "?"
 
-        # "Held" = week trend same direction as day trend (consistent)
+        # "Held" = month trend same direction as week trend
         held = False
-        if week_change is not None:
-            held = (direction == 1 and week_change > 0) or (direction == -1 and week_change < 0)
+        if month_change is not None:
+            held = (direction == 1 and month_change > 0) or (direction == -1 and month_change < 0)
 
         trend_total += 1
         if held:
@@ -760,10 +758,10 @@ def history():
             "title":         title,
             "start":         event.get("startDate"),
             "sport":         event.get("_sport"),
-            "trend":         f"{'▲' if direction == 1 else '▼'} {round(abs(day_change)*100,1)}¢",
+            "trend":         f"{'▲' if direction == 1 else '▼'} {round(abs(week_change)*100,1)}¢",
             "trending_team": trending_team,
-            "day_change":    round(day_change * 100, 1),
-            "week_change":   round(week_change * 100, 1) if week_change else None,
+            "week_change":   round(week_change * 100, 1),
+            "month_change":  round(month_change * 100, 1) if month_change is not None else None,
             "held":          held,
             "volume_usd":    round(volume),
         })
