@@ -22,7 +22,12 @@ GAMMA_BASE        = "https://gamma-api.polymarket.com"
 SPORTS = [
     {"key": "nhl",      "tag": "nhl",      "name": "NHL",      "emoji": "🏒", "url_path": "nhl"},
     {"key": "nba",      "tag": "nba",      "name": "NBA",      "emoji": "🏀", "url_path": "nba"},
-    {"key": "soccer",   "tag": "soccer",   "name": "Soccer",   "emoji": "⚽", "url_path": "soccer"},
+    {"key": "epl",          "tag": "epl",          "name": "EPL",       "emoji": "⚽", "url_path": "epl"},
+    {"key": "champions-league", "tag": "champions-league", "name": "UCL",  "emoji": "🏆", "url_path": "champions-league"},
+    {"key": "la-liga",      "tag": "la-liga",      "name": "La Liga",   "emoji": "⚽", "url_path": "la-liga"},
+    {"key": "bundesliga",   "tag": "bundesliga",   "name": "Bundesliga","emoji": "⚽", "url_path": "bundesliga"},
+    {"key": "serie-a",      "tag": "serie-a",      "name": "Serie A",   "emoji": "⚽", "url_path": "serie-a"},
+    {"key": "ligue-1",      "tag": "ligue-1",      "name": "Ligue 1",   "emoji": "⚽", "url_path": "ligue-1"},
     {"key": "baseball", "tag": "baseball", "name": "Baseball", "emoji": "⚾", "url_path": "mlb"},
 ]
 
@@ -458,11 +463,16 @@ footer { margin-top: 24px; font-size: 0.68rem; color: #1e1e1e; text-align: right
 const ALL = {{ data | tojson }};
 
 const SPORTS = [
-  { key: "all",      name: "Все",      emoji: "📊" },
-  { key: "nhl",      name: "NHL",      emoji: "🏒" },
-  { key: "nba",      name: "NBA",      emoji: "🏀" },
-  { key: "soccer",   name: "Soccer",   emoji: "⚽" },
-  { key: "baseball", name: "Baseball", emoji: "⚾" },
+  { key: "all",              name: "Все",        emoji: "📊" },
+  { key: "nhl",              name: "NHL",        emoji: "🏒" },
+  { key: "nba",              name: "NBA",        emoji: "🏀" },
+  { key: "baseball",         name: "Baseball",   emoji: "⚾" },
+  { key: "epl",              name: "EPL",        emoji: "⚽" },
+  { key: "champions-league", name: "UCL",        emoji: "🏆" },
+  { key: "la-liga",          name: "La Liga",    emoji: "⚽" },
+  { key: "bundesliga",       name: "Bundesliga", emoji: "⚽" },
+  { key: "serie-a",          name: "Serie A",    emoji: "⚽" },
+  { key: "ligue-1",          name: "Ligue 1",    emoji: "⚽" },
 ];
 
 let activeTab = "all";
