@@ -1251,56 +1251,60 @@ if __name__ == "__main__":
 # ── Backtest ──────────────────────────────────────────────────────────────────
 
 def _scrape_ww_archive(sport_path: str, pages: int = 3) -> list[str]:
-    """Find WinnersAndWhiners game URLs via web search (archive pages use JS rendering)."""
+    """
+    Crawl WinnersAndWhiners for game URLs.
+    Each game page contains links to other games — use as crawler seed.
+    """
     import re
-    urls = []
-    seen = set()
 
-    # Use multiple search queries to get more results
-    queries = [
-        f"site:winnersandwhiners.com/free-picks/{sport_path} picks prediction odds line movement 2026",
-        f"site:winnersandwhiners.com/free-picks/{sport_path} picks prediction line movement march 2026",
-        f"site:winnersandwhiners.com/free-picks/{sport_path} picks prediction line movement april 2026",
-    ]
+    # Known seed URLs per sport (from search results)
+    seeds = {
+        "nhl": [
+            "https://winnersandwhiners.com/free-picks/nhl/colorado-avalanche-vs-edmonton-oilers-picks-prediction-odds-and-line-movement-for-monday-april-13-2026",
+            "https://winnersandwhiners.com/free-picks/nhl/san-jose-sharks-vs-st-louis-blues-picks-prediction-odds-and-line-movement-for-thursday-march-26-2026",
+            "https://winnersandwhiners.com/free-picks/nhl/los-angeles-kings-vs-new-york-rangers-picks-prediction-odds-and-line-movement-for-monday-march-16-2026",
+        ],
+        "nba": [
+            "https://winnersandwhiners.com/free-picks/nba/golden-state-warriors-vs-boston-celtics-picks-prediction-odds-and-line-movement-for-wednesday-march-18-2026",
+        ],
+        "soccer": [
+            "https://winnersandwhiners.com/free-picks/soccer/",
+        ],
+    }
 
-    for query in queries:
+    start_urls = seeds.get(sport_path, [])
+    if not start_urls:
+        return []
+
+    seen = set(start_urls)
+    queue = list(start_urls)
+    found = []
+    pattern = re.compile(
+        r'href="(https://winnersandwhiners\.com/free-picks/' + re.escape(sport_path) + r'/[^"]+)"'
+    )
+
+    while queue and len(found) < 50:
+        url = queue.pop(0)
         try:
-            r = requests.get(
-                "https://www.googleapis.com/customsearch/v1",
-                params={"q": query, "num": 10},
-                timeout=10,
-            )
-            # Google CSE won't work without API key — use DuckDuckGo HTML instead
-        except Exception:
-            pass
-
-        # Fallback: scrape DuckDuckGo HTML search
-        try:
-            r = requests.get(
-                "https://html.duckduckgo.com/html/",
-                params={"q": query},
-                timeout=15,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-            )
-            if r.status_code == 200:
-                found = re.findall(
-                    r'href="(https://winnersandwhiners\.com/free-picks/' + re.escape(sport_path) + r'/[^"&]+)"',
-                    r.text
-                )
-                for u in found:
-                    # Clean URL (remove tracking params)
-                    u = u.split("?")[0].split("&")[0]
-                    if u not in seen and "picks" in u:
-                        seen.add(u)
-                        urls.append(u)
+            r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code != 200:
+                continue
+            # Add this URL to results if it's a game page
+            if "picks" in url and url not in found:
+                found.append(url)
+            # Find more game URLs in the page
+            new_urls = pattern.findall(r.text)
+            for u in new_urls:
+                u = u.split("?")[0]
+                if u not in seen and "picks" in u:
+                    seen.add(u)
+                    queue.append(u)
+            log.info(f"Crawled {url[:60]}... found {len(new_urls)} links, total {len(found)}")
         except Exception as e:
-            log.warning(f"DDG search failed: {e}")
+            log.warning(f"crawl error {url}: {e}")
 
-        if len(urls) >= 50:
-            break
-
-    log.info(f"Found {len(urls)} game URLs for {sport_path}")
-    return urls[:50]
+    log.info(f"Total URLs found for {sport_path}: {len(found)}")
+    return found
 
 
 def _scrape_ww_line_movement(url: str) -> dict:
