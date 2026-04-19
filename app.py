@@ -1403,7 +1403,46 @@ def _check_trend_at_checkpoint(points: list, match_start: int,
         return cp_prob < first_prob - TREND_MIN_DELTA / 2
 
 
-@app.route("/backtest")
+@app.route("/debug/backtest")
+def debug_backtest():
+    """Debug: show raw scraped data from one WinnersAndWhiners game page."""
+    url = request.args.get("url",
+        "https://winnersandwhiners.com/free-picks/nhl/san-jose-sharks-vs-st-louis-blues-picks-prediction-odds-and-line-movement-for-thursday-march-26-2026"
+    )
+    import re
+    try:
+        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        html = r.text
+
+        # Show all table rows found
+        all_trs = re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.DOTALL)
+        td_rows = []
+        for tr in all_trs:
+            tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
+            # Clean HTML tags
+            tds_clean = [re.sub(r'<[^>]+>', '', td).strip() for td in tds]
+            if len(tds_clean) >= 3:
+                td_rows.append(tds_clean)
+
+        # Also try the regex from our scraper
+        rows = re.findall(
+            r'<tr[^>]*>\s*<td[^>]*>([\d/]+)</td>\s*<td[^>]*>([\d:APM\s]+)</td>\s*<td[^>]*>([+\-]?\d+)</td>\s*<td[^>]*>([+\-]?\d+)</td>',
+            html
+        )
+
+        # Find any odds-looking numbers in the page
+        odds_pattern = re.findall(r'[+\-]\d{3}', html[:50000])
+
+        return jsonify({
+            "url": url,
+            "status": r.status_code,
+            "table_rows_found": td_rows[:20],
+            "regex_rows_found": rows[:10],
+            "odds_numbers_sample": list(set(odds_pattern))[:30],
+            "html_snippet": html[html.find("Line Movement"):html.find("Line Movement")+2000] if "Line Movement" in html else "Line Movement section not found",
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
 def backtest():
     """
     Backtest monotone trend strategy on WinnersAndWhiners line movement data.
