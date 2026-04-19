@@ -839,6 +839,66 @@ def history():
         "summary": f"{trend_held}/{trend_total} трендов сохранились до матча ({pct}%)" if pct is not None else "Нет матчей с трендом",
         "matches": results,
     })
+
+@app.route("/debug/history")
+def debug_history():
+    """Debug: show raw closed events and price history for a team."""
+    team  = request.args.get("team", "Rangers")
+    sport = request.args.get("sport", "nhl")
+
+    try:
+        r = requests.get(
+            f"{GAMMA_BASE}/events",
+            params={"active": "false", "closed": "true", "tag_slug": sport, "limit": 50},
+            timeout=20,
+        )
+        data = r.json()
+        events = data if isinstance(data, list) else data.get("events", [])
+        team_events = [e for e in events if team.lower() in (e.get("title") or "").lower()]
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    if not team_events:
+        return jsonify({"found": 0, "all_titles": [e.get("title") for e in events[:20]]})
+
+    event = team_events[0]
+    markets = event.get("markets", [])
+    market_id = None
+    for m in markets:
+        outcomes = _parse_list(m.get("outcomes", []))
+        if len(outcomes) == 2:
+            market_id = m.get("id") or m.get("conditionId")
+            break
+
+    hist_results = {}
+    for ep in ["prices-history", "timeseries", "history", "markets"]:
+        try:
+            h = requests.get(
+                f"{GAMMA_BASE}/{ep}",
+                params={"market": market_id, "interval": "1h", "fidelity": 60},
+                timeout=10,
+            )
+            body = h.json()
+            hist_results[ep] = {
+                "status": h.status_code,
+                "type": type(body).__name__,
+                "len": len(body) if isinstance(body, list) else len(body.get("history", body.get("prices", []))),
+                "sample": body[:2] if isinstance(body, list) else body,
+            }
+        except Exception as ex:
+            hist_results[ep] = {"error": str(ex)}
+
+    return jsonify({
+        "team":        team,
+        "found":       len(team_events),
+        "market_id":   market_id,
+        "event_title": event.get("title"),
+        "event_start": event.get("startDate"),
+        "market_keys": list(markets[0].keys()) if markets else [],
+        "endpoints":   hist_results,
+    })
+
+@app.route("/debug/snapshots")
 def debug_snapshots():
     with get_con() as con:
         total  = con.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
