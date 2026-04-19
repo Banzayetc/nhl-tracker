@@ -646,9 +646,151 @@ def cron():
 @app.route("/history")
 def history():
     """
-    Analyse closed matches for a team using built-in Polymarket price change fields.
+    Analyse past matches for a team using our own snapshots.
     Usage: /history?team=Rangers&n=15&sport=nhl
     """
+    team  = request.args.get("team", "").strip()
+    n     = min(int(request.args.get("n", 15)), 30)
+    sport = request.args.get("sport", "")
+
+    if not team:
+        return jsonify({"error": "team parameter required. Example: /history?team=Rangers"}), 400
+
+    now = int(time.time())
+
+    with get_con() as con:
+        # Find past matches with this team in question/team_a/team_b
+        if sport:
+            rows = con.execute(
+                """SELECT DISTINCT market_id, question, team_a, team_b, match_start, sport, event_slug
+                   FROM snapshots
+                   WHERE match_start < ?
+                     AND sport = ?
+                     AND (LOWER(team_a) LIKE ? OR LOWER(team_b) LIKE ? OR LOWER(question) LIKE ?)
+                   ORDER BY match_start DESC
+                   LIMIT ?""",
+                (now, sport, f"%{team.lower()}%", f"%{team.lower()}%", f"%{team.lower()}%", n),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                """SELECT DISTINCT market_id, question, team_a, team_b, match_start, sport, event_slug
+                   FROM snapshots
+                   WHERE match_start < ?
+                     AND (LOWER(team_a) LIKE ? OR LOWER(team_b) LIKE ? OR LOWER(question) LIKE ?)
+                   ORDER BY match_start DESC
+                   LIMIT ?""",
+                (now, f"%{team.lower()}%", f"%{team.lower()}%", f"%{team.lower()}%", n),
+            ).fetchall()
+
+        if not rows:
+            # Show what teams we have in DB for reference
+            sample = con.execute(
+                "SELECT DISTINCT team_a FROM snapshots LIMIT 20"
+            ).fetchall()
+            return jsonify({
+                "team": team,
+                "matches_found": 0,
+                "message": "No past matches found in our database for this team. DB is still accumulating data.",
+                "sample_teams": [r[0] for r in sample],
+            })
+
+        results = []
+        trend_total = 0
+        trend_held  = 0
+
+        for row in rows:
+            mid         = row["market_id"]
+            match_start = row["match_start"]
+            snap_start  = match_start - 48 * 3600
+            snap_end    = match_start - 12 * 3600
+
+            # Get snapshots in the 12-48h window before match
+            snaps = con.execute(
+                """SELECT price_a, price_b, fetched_at
+                   FROM snapshots
+                   WHERE market_id = ?
+                     AND fetched_at BETWEEN ? AND ?
+                   ORDER BY fetched_at ASC""",
+                (mid, snap_start, snap_end),
+            ).fetchall()
+
+            match_info = {
+                "title":       row["question"],
+                "team_a":      row["team_a"],
+                "team_b":      row["team_b"],
+                "start":       datetime.fromtimestamp(match_start).strftime("%Y-%m-%d %H:%M"),
+                "sport":       row["sport"],
+                "snaps_count": len(snaps),
+            }
+
+            if len(snaps) < 3:
+                match_info["trend"] = None
+                match_info["reason"] = f"not enough snapshots ({len(snaps)}, need 3+)"
+                results.append(match_info)
+                continue
+
+            prices_a = [s["price_a"] for s in snaps]
+            first_p  = prices_a[0]
+            last_p   = prices_a[-1]
+            delta    = last_p - first_p
+
+            if abs(delta) < TREND_MIN_DELTA:
+                match_info["trend"]      = None
+                match_info["reason"]     = f"no trend (delta={round(delta*100,1)}¢)"
+                match_info["delta_cents"] = round(delta * 100, 1)
+                results.append(match_info)
+                continue
+
+            direction = 1 if delta > 0 else -1
+            monotone  = is_monotone(prices_a, direction, MAX_PULLBACK)
+
+            if not monotone:
+                match_info["trend"]  = None
+                match_info["reason"] = f"not monotone (delta={round(delta*100,1)}¢ but reversed > {MAX_PULLBACK*100}¢)"
+                match_info["delta_cents"] = round(delta * 100, 1)
+                results.append(match_info)
+                continue
+
+            # Trend found — check if it held into match start (last snapshot before start)
+            final_snaps = con.execute(
+                """SELECT price_a FROM snapshots
+                   WHERE market_id = ? AND fetched_at BETWEEN ? AND ?
+                   ORDER BY fetched_at DESC LIMIT 1""",
+                (mid, match_start - 13 * 3600, match_start),
+            ).fetchall()
+
+            held = False
+            final_price = None
+            if final_snaps:
+                final_price = final_snaps[0]["price_a"]
+                held = (direction == 1 and final_price > first_p + TREND_MIN_DELTA / 2) or \
+                       (direction == -1 and final_price < first_p - TREND_MIN_DELTA / 2)
+
+            trend_total += 1
+            if held:
+                trend_held += 1
+
+            trending_team = row["team_a"] if direction == 1 else row["team_b"]
+
+            match_info["trend"]         = f"{'▲' if direction==1 else '▼'} {round(abs(delta)*100,1)}¢"
+            match_info["trending_team"] = trending_team
+            match_info["delta_cents"]   = round(delta * 100, 1)
+            match_info["final_price"]   = round(final_price, 3) if final_price else None
+            match_info["held"]          = held
+            results.append(match_info)
+
+    pct = round(trend_held / trend_total * 100) if trend_total > 0 else None
+
+    return jsonify({
+        "team":               team,
+        "matches_checked":    len(rows),
+        "matches_with_trend": trend_total,
+        "trend_held_count":   trend_held,
+        "trend_held_pct":     pct,
+        "summary":            f"{trend_held}/{trend_total} трендов сохранились до матча ({pct}%)" if pct is not None else "Нет матчей с трендом в нашей базе",
+        "note":               "Анализ на основе наших снапшотов. Чем дольше работает трекер — тем больше данных.",
+        "matches":            results,
+    })
     team  = request.args.get("team", "").strip()
     n     = min(int(request.args.get("n", 15)), 30)
     sport = request.args.get("sport", "")
