@@ -27,9 +27,9 @@ PORT = int(os.environ.get("PORT", 8765))
 
 # Дисциплины bo3.gg
 DISCIPLINES = {
-    "cs2":      {"id": 1, "label": "CS2",      "pm_prefix": "counter-strike"},
-    "valorant": {"id": 2, "label": "Valorant", "pm_prefix": "valorant"},
-    "dota2":    {"id": 4, "label": "Dota 2",   "pm_prefix": "dota"},
+    "cs2":      {"id": 1, "label": "CS2",      "pm_tag": "cs2"},
+    "valorant": {"id": 2, "label": "Valorant", "pm_tag": "valorant"},
+    "dota2":    {"id": 4, "label": "Dota 2",   "pm_tag": "dota-2"},
 }
 
 # Пороги объёма (из бэктеста). CS2 выше т.к. база ликвиднее.
@@ -107,29 +107,57 @@ def get_score(m):
 
 # ── Polymarket ─────────────────────────────────────────────────────────────────
 
-def pm_volume(t1, t2, prefix):
-    """Ищет матч на Polymarket, возвращает (volume, title)"""
-    url = "https://gamma-api.polymarket.com/events?tag_slug=esports&limit=200&closed=false"
+def _norm_tokens(name):
+    """Значимые токены имени команды (для мягкого сравнения)"""
+    name = (name or "").lower()
+    name = re.sub(r'[^a-z0-9 ]', ' ', name)
+    stop = {'esports', 'team', 'gaming', 'club', 'the', 'academy'}
+    return [t for t in name.split() if len(t) >= 2 and t not in stop]
+
+def _name_match(bo3_name, pm_name):
+    """Мягкое совпадение имён команд (Yakutou ~ Yakult и т.п.)"""
+    a = _norm_tokens(bo3_name)
+    b = _norm_tokens(pm_name)
+    if not a or not b:
+        return False
+    for ta in a:
+        for tb in b:
+            n = min(len(ta), len(tb))
+            if n >= 4 and ta[:n] == tb[:n]:
+                return True
+            if n < 4 and ta == tb:
+                return True
+    return False
+
+def pm_volume(t1, t2, tag):
+    """Ищет матч на Polymarket по тегу игры, мягко матчит имена обеих команд.
+    Возвращает (volume, title, slug)."""
+    url = f"https://gamma-api.polymarket.com/events?tag_slug={tag}&closed=false&limit=100"
     try:
         events = http_get_json(url, timeout=8)
     except Exception:
-        return None, None
-
-    # нормализуем имена для поиска (первое слово обычно достаточно)
-    t1k = t1.lower().split()[0] if t1 else ""
-    t2k = t2.lower().split()[0] if t2 else ""
+        return None, None, None
 
     for ev in events:
         title = ev.get("title", "")
-        tl = title.lower()
-        if prefix in tl and t1k in tl and t2k in tl and "bo3" in tl:
+        if "bo3" not in title.lower():
+            continue
+        # имена команд из заголовка "Game: A vs B (BO3) - ..."
+        m = re.search(r":\s*(.+?)\s+vs\s+(.+?)\s*\(", title, re.IGNORECASE)
+        if m:
+            pm_t1, pm_t2 = m.group(1), m.group(2)
+        else:
+            pm_t1, pm_t2 = title, title
+        # обе команды должны совпасть (в любом порядке)
+        ok = (_name_match(t1, pm_t1) and _name_match(t2, pm_t2)) or \
+             (_name_match(t1, pm_t2) and _name_match(t2, pm_t1))
+        if ok:
             vol = ev.get("volume") or 0
             try:
                 vol = float(vol)
             except Exception:
                 vol = 0.0
-            slug = ev.get("slug") or ""
-            return vol, title, slug
+            return vol, title, ev.get("slug") or ""
     return None, None, None
 
 def vol_label(vol, game):
@@ -223,7 +251,7 @@ def monitor_loop():
                         STATE["alerted"].add(akey)
 
                     push_log(f"🚨 [{disc['label']}] КАРТА 1: {t1} vs {t2} → {winner}", "alert")
-                    vol, pm_title, pm_slug = pm_volume(t1, t2, disc["pm_prefix"])
+                    vol, pm_title, pm_slug = pm_volume(t1, t2, disc["pm_tag"])
                     vtext, vcolor = vol_label(vol, gk)
                     pm_url = f"https://polymarket.com/event/{pm_slug}" if pm_slug else ""
                     push_log(f"   {vtext}", "alert")
