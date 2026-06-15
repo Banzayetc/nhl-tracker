@@ -194,20 +194,30 @@ def monitor_loop():
                         "s1": score[0], "s2": score[1], "gn": gnum,
                     })
 
+                total = score[0] + score[1]
+
                 with LOCK:
                     prev = STATE["seen"].get(mid)
-                    akey = f"{mid}_{gnum}"
+                    akey = f"{mid}_k1"   # один алерт на матч (факт К1), не зависит от game_number
                     already = akey in STATE["alerted"]
 
                 if prev is None:
+                    # первый раз видим матч
                     with LOCK:
                         STATE["seen"][mid] = score
                     push_log(f"📡 [{disc['label']}] {t1} vs {t2}  [{score[0]}:{score[1]}]", "match")
-                    continue
+                    # если матч впервые увиден уже на 1:0 — это тоже окно входа, алертим
+                    if total != 1:
+                        continue
+                    # иначе проваливаемся в блок алерта ниже
 
-                total = score[0] + score[1]
-                if gended and total == 1 and not already:
-                    winner = t1 if score[0] > prev[0] else t2
+                prev_total = (prev[0] + prev[1]) if prev else -1
+
+                # Алерт когда серия в состоянии 1:0/0:1 (К1 сыграна, перерыв),
+                # и мы по этому матчу ещё не алертили. Не зависит от game_ended.
+                if total == 1 and not already:
+                    base = prev if prev is not None else (0, 0)
+                    winner = t1 if score[0] > base[0] else (t2 if score[1] > base[1] else (t1 if score[0] == 1 else t2))
                     loser = t2 if winner == t1 else t1
                     with LOCK:
                         STATE["alerted"].add(akey)
