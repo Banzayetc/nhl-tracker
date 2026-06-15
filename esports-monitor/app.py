@@ -116,15 +116,26 @@ def _norm_tokens(name):
     return [t for t in name.split() if len(t) >= 2 and t not in stop]
 
 def _name_match(bo3_name, pm_name):
-    """Мягкое совпадение имён команд (Yakutou ~ Yakult и т.п.)"""
+    """Мягкое совпадение имён команд (Yakutou~Yakult, The Mongolz~TheMongolz)"""
     a = _norm_tokens(bo3_name)
     b = _norm_tokens(pm_name)
     if not a or not b:
         return False
+    # также склеенные варианты целиком (themongolz)
+    a_join = "".join(a)
+    b_join = "".join(b)
+    if len(a_join) >= 4 and len(b_join) >= 4:
+        if a_join in b_join or b_join in a_join:
+            return True
     for ta in a:
         for tb in b:
             n = min(len(ta), len(tb))
             if n >= 4 and ta[:n] == tb[:n]:
+                return True
+            # вхождение подстроки (mongolz в themongolz)
+            if len(ta) >= 4 and ta in tb:
+                return True
+            if len(tb) >= 4 and tb in ta:
                 return True
             if n < 4 and ta == tb:
                 return True
