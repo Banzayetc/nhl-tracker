@@ -186,10 +186,13 @@ def monitor_loop():
                 gnum = int(lu.get("game_number") or 0)
                 gended = bool(lu.get("game_ended"))
 
-                all_live.append({
-                    "game": disc["label"], "t1": t1, "t2": t2,
-                    "s1": score[0], "s2": score[1], "gn": gnum,
-                })
+                # В список показываем только матчи где вход ещё возможен:
+                # 0:0 (ждём К1) и 1:0/0:1 (момент входа). 1:1 и решённые серии скрываем.
+                if score[0] + score[1] <= 1:
+                    all_live.append({
+                        "game": disc["label"], "t1": t1, "t2": t2,
+                        "s1": score[0], "s2": score[1], "gn": gnum,
+                    })
 
                 with LOCK:
                     prev = STATE["seen"].get(mid)
@@ -226,6 +229,7 @@ def monitor_loop():
                             "pm_title": pm_title or "",
                             "pm_url": pm_url,
                             "hint": momentum_hint(gk),
+                            "finished_at": now_ts(),
                         })
                         STATE["alerts"] = STATE["alerts"][-5:]
 
@@ -352,24 +356,24 @@ button:active{opacity:.7}
 .lr.info{border-color:#2a2d3a}.lr.match{border-color:#378ADD;background:#0a1520}.lr.alert{border-color:#E24B4A;background:#200a0a}
 .lt{color:#444;min-width:44px;flex-shrink:0}
 .lm{color:#c0c0c0;line-height:1.5}.lm.am{color:#ff8080;font-weight:500}
-.ac{display:none;background:#1a0a0a;border:1px solid #E24B4A44;border-radius:12px;padding:16px;margin-bottom:12px}
+.ac{display:none;background:#250c0c;border:1px solid #E24B4A88;border-radius:11px;padding:12px;margin-bottom:10px;box-shadow:0 0 16px #E24B4A22}
 .ac.show{display:block}
-.ac .bd{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:#ff6b6b;margin-bottom:8px}
-.ac .gm{display:inline-block;font-size:10px;background:#2a2d3a;color:#999;padding:2px 8px;border-radius:5px;margin-left:8px}
-.at{font-size:20px;font-weight:600;color:#fff;margin-bottom:4px}
-.am2{font-size:12px;color:#555;margin-bottom:12px}
-.wb{background:#0a1f16;border:1px solid #1D9E7555;border-radius:8px;padding:10px 14px;margin-bottom:10px}
-.wb .wl{font-size:10px;color:#5DCAA5;text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}
-.wb .wn{font-size:17px;font-weight:600;color:#9FE1CB}
-.legs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
-.leg{background:#12151f;border-radius:8px;padding:9px 12px}
-.leg .ll{font-size:10px;color:#444;margin-bottom:3px;text-transform:uppercase;letter-spacing:.06em}
-.leg .lv{font-size:13px;font-weight:500;color:#c0c0c0}
-.vb{border-radius:8px;padding:10px 14px;margin-bottom:8px}
-.vb .vl{font-size:10px;color:#555;text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}
-.vb .vv{font-size:17px;font-weight:600}
-.vb .vt{font-size:11px;color:#444;margin-top:4px;word-break:break-word}
-.hint{font-size:11px;color:#888;background:#12151f;border-radius:7px;padding:8px 12px;line-height:1.5;margin-bottom:8px}
+.ac .bd{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#ff8585;margin-bottom:7px;font-weight:600}
+.ac .gm{display:inline-block;font-size:10px;background:#3a3d4a;color:#bbb;padding:2px 7px;border-radius:5px;margin-left:7px}
+.at{font-size:18px;font-weight:600;color:#fff;margin-bottom:3px}
+.am2{font-size:12px;color:#888;margin-bottom:9px}
+.wb{background:#0d2a1e;border:1px solid #1D9E7588;border-radius:8px;padding:8px 12px;margin-bottom:8px}
+.wb .wl{font-size:10px;color:#7FE3C2;text-transform:uppercase;letter-spacing:.08em;margin-bottom:2px}
+.wb .wn{font-size:16px;font-weight:600;color:#B8F0DD}
+.legs{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:8px}
+.leg{background:#161a26;border-radius:8px;padding:7px 11px}
+.leg .ll{font-size:10px;color:#777;margin-bottom:2px;text-transform:uppercase;letter-spacing:.06em}
+.leg .lv{font-size:13px;font-weight:500;color:#e0e0e0}
+.vb{border-radius:8px;padding:8px 12px;margin-bottom:7px}
+.vb .vl{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:.08em;margin-bottom:2px}
+.vb .vv{font-size:16px;font-weight:600}
+.vb .vt{font-size:11px;color:#777;margin-top:3px;word-break:break-word}
+.hint{font-size:11px;color:#aaa;background:#161a26;border-radius:7px;padding:7px 11px;line-height:1.45;margin-bottom:7px}
 .dis{width:100%;background:#12151f;color:#555;border:1px solid #2a2d3a;border-radius:7px;padding:7px;font-size:12px;cursor:pointer}
 .pmlink{display:block;text-align:center;background:#13212e;color:#5BA3E0;border:1px solid #2a4a63;border-radius:7px;padding:9px;font-size:12px;text-decoration:none;margin-bottom:8px;font-weight:500}
 .pmlink:active{opacity:.7}
@@ -435,9 +439,10 @@ function buildCard(a){
   const pmLink = a.pm_url
     ? `<a class="pmlink" href="${a.pm_url}" target="_blank">↗ Открыть на Polymarket</a>`
     : '';
+  const fin = a.finished_at ? ` · ${a.finished_at} КИЇВ` : '';
   return `<div class="ac show" data-id="${a.id}">
     <div class="achead">
-      <div class="bd">🚨 Карта 1 завершена<span class="gm">${escapeHtml(a.game)}</span></div>
+      <div class="bd">🚨 Карта 1 завершена${fin}<span class="gm">${escapeHtml(a.game)}</span></div>
       <button class="acx" onclick="closeCard(${a.id})">✕</button>
     </div>
     <div class="at">${escapeHtml(a.t1)} vs ${escapeHtml(a.t2)}</div>
@@ -447,7 +452,7 @@ function buildCard(a){
       <div class="leg"><div class="ll">Нога 1 — BUY серию</div><div class="lv">${escapeHtml(a.winner)}</div></div>
       <div class="leg"><div class="ll">Нога 2 — BUY карту 2</div><div class="lv">${escapeHtml(a.loser)}</div></div>
     </div>
-    <div class="vb" style="border:1px solid ${a.vol_color}44;background:${a.vol_color}11">
+    <div class="vb" style="border:1px solid ${a.vol_color}66;background:${a.vol_color}1a">
       <div class="vl">Объём Polymarket</div>
       <div class="vv" style="color:${a.vol_color}">${escapeHtml(a.vol_text)}</div>
       <div class="vt">${escapeHtml(a.pm_title)||'Рынок не найден'}</div>
@@ -493,7 +498,7 @@ function start(){
     body:JSON.stringify({games:getGames(),interval:parseInt(document.getElementById('iv').value)||20,min_tier:document.getElementById('tier').value})});
 }
 function stop(){fetch('/stop',{method:'POST'})}
-function test(){showAlert({id:Date.now(),game:'CS2',t1:'Team Spirit',t2:'NAVI',score:'1:0',winner:'Team Spirit',loser:'NAVI',vol_text:'🟢 ЖИР  $87,000',vol_color:'#1D9E75',pm_title:'Counter-Strike: Spirit vs NAVI (BO3) - IEM Cologne',pm_url:'https://polymarket.com/event/cs2-aaa-inf1-2026-03-10',hint:'CS2: ставь ПРОТИВ победителя К1 (фав взял→BUY аутсайдер)'})}
+function test(){const t=new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Kyiv'});showAlert({id:Date.now(),game:'CS2',t1:'Team Spirit',t2:'NAVI',score:'1:0',winner:'Team Spirit',loser:'NAVI',vol_text:'🟢 ЖИР  $87,000',vol_color:'#1D9E75',pm_title:'Counter-Strike: Spirit vs NAVI (BO3) - IEM Cologne',pm_url:'https://polymarket.com/event/cs2-aaa-inf1-2026-03-10',hint:'CS2: ставь ПРОТИВ победителя К1 (фав взял→BUY аутсайдер)',finished_at:t})}
 
 setInterval(poll,2000);poll();
 </script></body></html>"""
