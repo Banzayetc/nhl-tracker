@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: esports-monitor
+    runtime: python
+    plan: free
+    buildCommand: ""
+    startCommand: python app.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.0"
