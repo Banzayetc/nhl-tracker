@@ -27,7 +27,7 @@ PORT = int(os.environ.get("PORT", 8765))
 
 # Дисциплины bo3.gg
 DISCIPLINES = {
-    "cs2":      {"id": 1, "label": "CS2",      "pm_tag": "cs2"},
+    "cs2":      {"id": 1, "label": "CS2",      "pm_tag": "counter-strike-2"},
     "valorant": {"id": 2, "label": "Valorant", "pm_tag": "valorant"},
     "dota2":    {"id": 4, "label": "Dota 2",   "pm_tag": "dota-2"},
 }
@@ -133,7 +133,7 @@ def _name_match(bo3_name, pm_name):
 def pm_volume(t1, t2, tag):
     """Ищет матч на Polymarket по тегу игры, мягко матчит имена обеих команд.
     Возвращает (volume, title, slug)."""
-    url = f"https://gamma-api.polymarket.com/events?tag_slug={tag}&closed=false&limit=100"
+    url = f"https://gamma-api.polymarket.com/events?tag_slug={tag}&closed=false&limit=100&order=startDate&ascending=false"
     try:
         events = http_get_json(url, timeout=8)
     except Exception:
