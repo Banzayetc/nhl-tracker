@@ -50,6 +50,7 @@ STATE = {
     "alerts": [],
     "seen": {},              # match_id -> last score
     "alerted": set(),
+    "vol_cache": {},         # match_id -> (vol, title, slug, game_key)
 }
 LOCK = threading.Lock()
 
@@ -170,6 +171,17 @@ def vol_label(vol, game):
         return f"🟡 ТОНКО  ${vol:,.0f}", "#BA7517"
     return f"🔴 МИМО  ${vol:,.0f}", "#A32D2D"
 
+def vol_verdict(vol, game):
+    """Короткая пометка для списка: моментум ЖИР/ТОНКО/МИМО + цвет"""
+    th = VOL_THRESHOLDS[game]
+    if vol is None:
+        return "?", "#888888"
+    if vol < th["fat"]:
+        return f"ЖИР ${vol/1000:.0f}K", "#1D9E75"
+    if vol < th["thin"]:
+        return f"ТОНКО ${vol/1000:.0f}K", "#BA7517"
+    return f"МИМО ${vol/1000:.0f}K", "#A32D2D"
+
 # ── паттерн моментума по игре ──────────────────────────────────────────────────
 
 def momentum_hint(game):
@@ -216,10 +228,29 @@ def monitor_loop():
 
                 # В список показываем только матчи где вход ещё возможен:
                 # 0:0 (ждём К1) и 1:0/0:1 (момент входа). 1:1 и решённые серии скрываем.
-                if score[0] + score[1] <= 1:
+                stotal = score[0] + score[1]
+                if stotal <= 1:
+                    window = (stotal == 1)   # 1:0 → окно дельта-нейтрали открыто
+
+                    # объём с кешем (тянем один раз на матч)
+                    with LOCK:
+                        cached = STATE["vol_cache"].get(mid)
+                    if cached is None:
+                        cvol, ctitle, cslug = pm_volume(t1, t2, disc["pm_tag"])
+                        with LOCK:
+                            STATE["vol_cache"][mid] = (cvol, ctitle, cslug)
+                    else:
+                        cvol, ctitle, cslug = cached
+
+                    vtext, vcolor = vol_verdict(cvol, gk)
+                    purl = f"https://polymarket.com/event/{cslug}" if cslug else ""
+
                     all_live.append({
                         "game": disc["label"], "t1": t1, "t2": t2,
                         "s1": score[0], "s2": score[1], "gn": gnum,
+                        "window": window,
+                        "vol_text": vtext, "vol_color": vcolor,
+                        "pm_url": purl,
                     })
 
                 total = score[0] + score[1]
@@ -276,6 +307,9 @@ def monitor_loop():
 
         with LOCK:
             STATE["live"] = all_live
+            # ограничиваем размер кеша объёмов (защита от роста)
+            if len(STATE["vol_cache"]) > 300:
+                STATE["vol_cache"] = {}
 
         # спим интервал, но реагируем на стоп
         for _ in range(interval):
@@ -333,6 +367,7 @@ class Handler(BaseHTTPRequestHandler):
                     STATE["seen"] = {}
                     STATE["alerted"] = set()
                     STATE["alerts"] = []
+                    STATE["vol_cache"] = {}
                     start = True
                 else:
                     start = False
@@ -386,6 +421,15 @@ button:active{opacity:.7}
 .pill{display:inline-flex;align-items:center;gap:6px;background:#1a1d27;border:1px solid #2a2d3a;border-radius:20px;padding:4px 10px;font-size:12px;color:#888;margin:0 4px 4px 0}
 .pill .g{font-size:10px;color:#555;text-transform:uppercase}
 .pill .sc{font-weight:600;color:#e0e0e0}
+.pill2{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#1a1d27;border:1px solid #2a2d3a;border-radius:10px;padding:7px 11px;font-size:13px;color:#c8c8c8;margin-bottom:6px}
+.pill2 .g{font-size:10px;color:#666;text-transform:uppercase;background:#262a36;padding:2px 6px;border-radius:4px}
+.pill2 .nm{font-weight:500;color:#e8e8e8}
+.pill2 .sc{font-weight:700;color:#fff;font-variant-numeric:tabular-nums}
+.tag-win{font-size:11px;color:#7FE3C2;background:#0d2a1e;border:1px solid #1D9E7566;padding:2px 8px;border-radius:5px;font-weight:600}
+.tag-wait{font-size:11px;color:#888;background:#161a26;border:1px solid #2a2d3a;padding:2px 8px;border-radius:5px}
+.tag-vol{font-size:11px;background:#12151f;border:1px solid #333;padding:2px 8px;border-radius:5px;font-weight:600}
+.tag-link{margin-left:auto;color:#5BA3E0;text-decoration:none;font-size:15px;padding:0 4px}
+.tag-link:active{opacity:.6}
 .nolive{font-size:12px;color:#444;font-style:italic}
 .logw{background:#1a1d27;border:1px solid #2a2d3a;border-radius:12px;overflow:hidden}
 .logh{padding:8px 14px;border-bottom:1px solid #2a2d3a;font-size:11px;color:#444}
@@ -465,7 +509,23 @@ function renderLog(log){
 function renderLive(live){
   const el=document.getElementById('live');
   if(!live.length){el.innerHTML='<span class="nolive">Нет активных матчей</span>';return}
-  el.innerHTML=live.map(m=>`<span class="pill"><span class="g">${m.game}</span> ${m.t1} vs ${m.t2} <span class="sc">${m.s1}:${m.s2}</span> К${m.gn}</span>`).join('');
+  el.innerHTML=live.map(m=>{
+    const win = m.window
+      ? `<span class="tag-win">🎯 Окно</span>`
+      : `<span class="tag-wait">⏳ ждём К1</span>`;
+    const vol = m.vol_text && m.vol_text!=='?'
+      ? `<span class="tag-vol" style="color:${m.vol_color};border-color:${m.vol_color}55">${m.vol_text}</span>`
+      : `<span class="tag-vol" style="color:#666;border-color:#333">нет рынка</span>`;
+    const link = m.pm_url
+      ? `<a class="tag-link" href="${m.pm_url}" target="_blank" title="Открыть на Polymarket">↗</a>`
+      : '';
+    return `<div class="pill2">
+      <span class="g">${m.game}</span>
+      <span class="nm">${escapeHtml(m.t1)} vs ${escapeHtml(m.t2)}</span>
+      <span class="sc">${m.s1}:${m.s2}</span>
+      ${win}${vol}${link}
+    </div>`;
+  }).join('');
 }
 
 const MAX_ALERTS=5;
