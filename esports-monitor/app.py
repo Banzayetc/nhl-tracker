@@ -227,6 +227,9 @@ def vol_verdict(vol, game):
     th = VOL_THRESHOLDS[game]
     if vol is None:
         return "?", "#888888"
+    # CS2: killzone — показываем но серым (не торговать)
+    if game == "cs2" and vol < th["kill"]:
+        return f"⛔ ${vol/1000:.0f}K", "#555555"
     if vol < th["fat"]:
         return f"ЖИР ${vol/1000:.0f}K", "#1D9E75"
     if vol < th["thin"]:
