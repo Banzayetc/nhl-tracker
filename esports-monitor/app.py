@@ -929,7 +929,7 @@ function start(){
     body:JSON.stringify({games:getGames(),interval:parseInt(document.getElementById('iv').value)||20,min_tier:document.getElementById('tier').value})});
 }
 function stop(){fetch('/stop',{method:'POST'})}
-function test(){const t=new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Kyiv'});showAlert({id:Date.now(),game:'CS2',t1:'Team Spirit',t2:'NAVI',score:'1:0',winner:'Team Spirit',loser:'NAVI',vol_text:'🟢 ЖИР  $87,000',vol_color:'#1D9E75',pm_title:'Counter-Strike: Spirit vs NAVI (BO3) - IEM Cologne',pm_url:'https://polymarket.com/event/cs2-aaa-inf1-2026-03-10',hint:'CS2: ставь ПРОТИВ победителя К1 (фав взял→BUY аутсайдер)',finished_at:t,k1_label:'Фав взял К1 → BUY аутсайдер',base_roi:'+57%',score_label:'Тесно (16:12, разрыв 4)',score_hint:'→ ROI вище середнього (~+47%)',map_score:'16:12'})}
+function test(){const t=new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Kyiv'});showAlert({id:Date.now(),game:'CS2',t1:'Team Spirit',t2:'NAVI',score:'1:0',winner:'Team Spirit',loser:'NAVI',vol_text:'🟢 ЖИР  $87,000',vol_color:'#1D9E75',pm_title:'Counter-Strike: Spirit vs NAVI (BO3) - IEM Cologne',pm_url:'',hint:'CS2: ставь ПРОТИВ победителя К1 (фав взял→BUY аутсайдер)',finished_at:t,k1_label:'Фав взял К1 → BUY аутсайдер',base_roi:'+57%',score_label:'Тесно (16:12, разрыв 4)',score_hint:'→ ROI вище середнього (~+47%)',map_score:'16:12'})}
 
 setInterval(poll,2000);poll();
 </script></body></html>"""
