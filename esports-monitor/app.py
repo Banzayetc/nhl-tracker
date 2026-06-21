@@ -33,16 +33,18 @@ DISCIPLINES = {
 }
 
 # Пороги объёма (из бэктеста). CS2 выше т.к. база ликвиднее.
+# CS2: killzone <$55K (обратный паттерн), жир $55-125K, рабочий до $250K
+# Dota2: жир <$25K, рабочий до $50K
 VOL_THRESHOLDS = {
-    "cs2":      {"fat": 150_000, "thin": 250_000},
-    "valorant": {"fat": 50_000,  "thin": 50_000},
-    "dota2":    {"fat": 50_000,  "thin": 50_000},
+    "cs2":      {"kill": 55_000, "fat": 125_000, "thin": 250_000},
+    "valorant": {"kill": 0,      "fat": 50_000,  "thin": 50_000},
+    "dota2":    {"kill": 0,      "fat": 25_000,  "thin": 50_000},
 }
 
 # Глобальное состояние (общий доступ из потоков)
 STATE = {
     "running": False,
-    "games": {"cs2": True, "valorant": True, "dota2": True},
+    "games": {"cs2": True, "valorant": False, "dota2": False},
     "interval": 20,
     "min_tier": "",          # "", "a", "s" — фильтр по тиру
     "log": [],
@@ -176,9 +178,15 @@ def vol_label(vol, game):
     th = VOL_THRESHOLDS[game]
     if vol is None:
         return "❓ Не найден на Polymarket", "#888888"
+    # CS2: зона killzone <$55K — обратный паттерн, не торговать
+    if game == "cs2" and vol < th["kill"]:
+        return f"⛔ КІЛЗОН  ${vol:,.0f}", "#666666"
     if vol < th["fat"]:
         return f"🟢 ЖИР  ${vol:,.0f}", "#1D9E75"
-    if vol < th["thin"]:
+    # CS2: рабочая зона $125-250K
+    if game == "cs2" and vol < th["thin"]:
+        return f"🟡 ТОНКО  ${vol:,.0f}", "#BA7517"
+    if game != "cs2" and vol < th["thin"]:
         return f"🟡 ТОНКО  ${vol:,.0f}", "#BA7517"
     return f"🔴 МИМО  ${vol:,.0f}", "#A32D2D"
 
@@ -483,8 +491,8 @@ button:active{opacity:.7}
 <h2>Игры</h2>
 <div class="games">
 <div class="chip on" data-g="cs2" onclick="tg(this)">CS2</div>
-<div class="chip on" data-g="valorant" onclick="tg(this)">Valorant</div>
-<div class="chip on" data-g="dota2" onclick="tg(this)">Dota 2</div>
+<div class="chip" data-g="valorant" onclick="tg(this)">Valorant</div>
+<div class="chip" data-g="dota2" onclick="tg(this)">Dota 2</div>
 </div>
 <div class="row">
 <div><label>Интервал (сек)</label><input type="number" id="iv" value="20" min="10" max="60"></div>
@@ -503,7 +511,7 @@ button:active{opacity:.7}
 <script>
 let lastAlertId=0, lastLogLen=0, running=false;
 
-function beep(){try{const c=new(window.AudioContext||window.webkitAudioContext)();[0,.18,.36].forEach(t=>{const o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.frequency.value=880;o.type='sine';g.gain.setValueAtTime(.5,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+.15);o.start(c.currentTime+t);o.stop(c.currentTime+t+.16)})}catch(e){}}
+function beep(){try{const c=new(window.AudioContext||window.webkitAudioContext)();[[880,0],[660,.2],[880,.4]].forEach(([freq,t])=>{const o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.frequency.value=freq;o.type='sine';g.gain.setValueAtTime(1.0,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+.2);o.start(c.currentTime+t);o.stop(c.currentTime+t+.21)})}catch(e){}}
 
 function dot(s){document.getElementById('dot').className='dot'+(s?' '+s:'')}
 
