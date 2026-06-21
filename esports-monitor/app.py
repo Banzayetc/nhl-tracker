@@ -299,12 +299,35 @@ def monitor_loop():
                     vtext, vcolor = vol_verdict(cvol, gk)
                     purl = f"https://polymarket.com/event/{cslug}" if cslug else ""
 
+                    # ROI hint по объёму
+                    th = VOL_THRESHOLDS[gk]
+                    if cvol is None:
+                        roi_hint = ""
+                    elif gk == "cs2" and cvol < th["kill"]:
+                        roi_hint = "⛔ killzone"
+                    elif cvol < th["fat"]:
+                        roi_hint = "ROI ~+40%"
+                    elif cvol < th["thin"]:
+                        roi_hint = "ROI ~+25%"
+                    else:
+                        roi_hint = "нет edge"
+
+                    # Время старта по Киеву
+                    sd = m.get("start_date", "")
+                    try:
+                        dt = datetime.fromisoformat(sd.replace("Z", "+00:00"))
+                        start_kyiv = dt.astimezone(KYIV).strftime("%H:%M") if KYIV else dt.strftime("%H:%M")
+                    except Exception:
+                        start_kyiv = ""
+
                     all_live.append({
                         "game": disc["label"], "t1": t1, "t2": t2,
                         "s1": score[0], "s2": score[1], "gn": gnum,
                         "window": window,
                         "vol_text": vtext, "vol_color": vcolor,
                         "pm_url": purl,
+                        "roi_hint": roi_hint,
+                        "start_kyiv": start_kyiv,
                     })
 
                 total = score[0] + score[1]
@@ -677,6 +700,12 @@ function renderLive(live){
     const vol = m.vol_text && m.vol_text!=='?'
       ? `<span class="tag-vol" style="color:${m.vol_color};border-color:${m.vol_color}55">${m.vol_text}</span>`
       : `<span class="tag-vol" style="color:#666;border-color:#333">нет рынка</span>`;
+    const roi = m.roi_hint
+      ? `<span class="tag-vol" style="color:#888;border-color:#333;font-weight:400">${m.roi_hint}</span>`
+      : '';
+    const time = m.start_kyiv
+      ? `<span class="tag-vol" style="color:#555;border-color:#2a2d3a;font-weight:400">⏰ ${m.start_kyiv}</span>`
+      : '';
     const link = m.pm_url
       ? `<a class="tag-link" href="${m.pm_url}" target="_blank" title="Открыть на Polymarket">↗</a>`
       : '';
@@ -684,7 +713,7 @@ function renderLive(live){
       <span class="g">${m.game}</span>
       <span class="nm">${escapeHtml(m.t1)} vs ${escapeHtml(m.t2)}</span>
       <span class="sc">${m.s1}:${m.s2}</span>
-      ${win}${vol}${link}
+      ${time}${win}${vol}${roi}${link}
     </div>`;
   }).join('');
 }
