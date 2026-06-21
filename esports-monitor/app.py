@@ -367,13 +367,14 @@ def monitor_loop():
                     # Уточнённый ROI по исходу К1 (только при счёте 1:0)
                     roi_k1 = ""
                     if window:  # счёт 1:0 — знаем кто взял К1
-                        # Определяем фаворита через bet_updates
+                        # Определяем фаворита через коэффициент букмекера
+                        # Меньший коэффициент = фаворит (это пред-матчевый показатель)
                         bu = m.get("bet_updates") or {}
-                        t1_agree = (bu.get("team_1") or {}).get("aggrement_score") or 0
-                        t2_agree = (bu.get("team_2") or {}).get("aggrement_score") or 0
-                        if t1_agree > t2_agree:
+                        t1_coeff = (bu.get("team_1") or {}).get("coeff") or 99
+                        t2_coeff = (bu.get("team_2") or {}).get("coeff") or 99
+                        if t1_coeff < t2_coeff:
                             fav_name = t1
-                        elif t2_agree > t1_agree:
+                        elif t2_coeff < t1_coeff:
                             fav_name = t2
                         else:
                             fav_name = None
@@ -449,13 +450,14 @@ def monitor_loop():
                     ms2 = m.get("team2_last_game_score")
 
                     # Кто победитель — фаворит или аутсайдер?
-                    # Определяем через bet_updates: выше aggrement_score = фаворит
+                    # Определяем фаворита через коэффициент букмекера
+                    # Меньший коэффициент = фаворит (стабильный пред-матчевый показатель)
                     bu = m.get("bet_updates") or {}
-                    t1_agree = (bu.get("team_1") or {}).get("aggrement_score") or 0
-                    t2_agree = (bu.get("team_2") or {}).get("aggrement_score") or 0
-                    if t1_agree > t2_agree:
+                    t1_coeff = (bu.get("team_1") or {}).get("coeff") or 99
+                    t2_coeff = (bu.get("team_2") or {}).get("coeff") or 99
+                    if t1_coeff < t2_coeff:
                         fav_name = t1
-                    elif t2_agree > t1_agree:
+                    elif t2_coeff < t1_coeff:
                         fav_name = t2
                     else:
                         fav_name = None
