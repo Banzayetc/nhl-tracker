@@ -33,10 +33,10 @@ DISCIPLINES = {
 }
 
 # Пороги объёма (из бэктеста). CS2 выше т.к. база ликвиднее.
-# CS2: killzone <$55K (обратный паттерн), жир $55-125K, рабочий до $250K
+# CS2: killzone <$40K (обратный паттерн), жир $40-125K, рабочий до $250K
 # Dota2: жир <$25K, рабочий до $50K
 VOL_THRESHOLDS = {
-    "cs2":      {"kill": 55_000, "fat": 125_000, "thin": 250_000},
+    "cs2":      {"kill": 40_000, "fat": 125_000, "thin": 250_000},
     "valorant": {"kill": 0,      "fat": 50_000,  "thin": 50_000},
     "dota2":    {"kill": 0,      "fat": 25_000,  "thin": 50_000},
 }
@@ -365,10 +365,14 @@ def monitor_loop():
             if len(STATE["vol_cache"]) > 300:
                 STATE["vol_cache"] = {}
 
-        # Upcoming матчи — обновляем каждые 5 минут
+        # Upcoming матчи — обновляем каждые 3 минуты
         try:
             now_ts_int = int(time.time())
-            if now_ts_int % 300 < interval:
+            with LOCK:
+                last_up = STATE.get("_last_upcoming", 0)
+            if now_ts_int - last_up >= 180:
+                with LOCK:
+                    STATE["_last_upcoming"] = now_ts_int
                 all_upcoming = []
                 for gk, on in games.items():
                     if not on:
@@ -379,7 +383,6 @@ def monitor_loop():
                             continue
                         t1, t2 = parse_slug(m.get("slug", ""))
                         sd = m.get("start_date", "")
-                        # Время до матча
                         try:
                             dt = datetime.fromisoformat(sd.replace("Z", "+00:00"))
                             now_utc = datetime.now(timezone.utc)
@@ -392,7 +395,6 @@ def monitor_loop():
                             diff_h = 99
                             kyiv_time = sd[:16]
 
-                        # Объём с кеша
                         mid = m["id"]
                         ck = f"up_{mid}"
                         with LOCK:
@@ -407,6 +409,19 @@ def monitor_loop():
                         vtext, vcolor = vol_verdict(cvol, gk)
                         purl = f"https://polymarket.com/event/{cslug}" if cslug else ""
 
+                        # ROI подсказка по объёму
+                        th = VOL_THRESHOLDS[gk]
+                        if cvol is None:
+                            roi_hint = ""
+                        elif gk == "cs2" and cvol < th["kill"]:
+                            roi_hint = "⛔ killzone"
+                        elif cvol < th["fat"]:
+                            roi_hint = "ROI ~+40%"
+                        elif cvol < th["thin"]:
+                            roi_hint = "ROI ~+25%"
+                        else:
+                            roi_hint = "нет edge"
+
                         all_upcoming.append({
                             "game": disc["label"],
                             "t1": t1, "t2": t2,
@@ -416,12 +431,13 @@ def monitor_loop():
                             "vol_color": vcolor,
                             "pm_url": purl,
                             "tier": m.get("tier", ""),
+                            "roi_hint": roi_hint,
                         })
 
-                # Сортируем по времени
                 all_upcoming.sort(key=lambda x: x["diff_h"])
                 with LOCK:
                     STATE["upcoming"] = all_upcoming
+                push_log(f"📅 Upcoming обновлено: {len(all_upcoming)} матчей", "info")
         except Exception as e:
             push_log(f"upcoming ошибка: {e}", "info")
 
@@ -639,13 +655,14 @@ function renderUpcoming(upcoming){
     const vol=m.vol_text&&m.vol_text!=='?'
       ?`<span class="uvol" style="color:${m.vol_color};border-color:${m.vol_color}55">${m.vol_text}</span>`
       :`<span class="uvol" style="color:#555;border-color:#333">нет рынка</span>`;
+    const roi=m.roi_hint?`<span class="uvol" style="color:#888;border-color:#333;font-weight:400">${m.roi_hint}</span>`:'';
     const link=m.pm_url?`<a class="ulink" href="${m.pm_url}" target="_blank">↗</a>`:'';
     const diffStr=m.diff_h<1?`${Math.round(m.diff_h*60)}мин`:`${m.diff_h.toFixed(1)}ч`;
     return `<div class="urow">
       <span class="ut">${escapeHtml(m.game)}</span>
       <span class="unm">${escapeHtml(m.t1)} vs ${escapeHtml(m.t2)}</span>
       <span class="utime">⏰ ${m.kyiv_time} (через ${diffStr})</span>
-      ${vol}${link}
+      ${vol}${roi}${link}
     </div>`;
   }).join('');
 }
