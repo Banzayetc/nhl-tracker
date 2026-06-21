@@ -379,7 +379,12 @@ def monitor_loop():
                         else:
                             fav_name = None
                         # Кто ведёт в серии = кто взял К1
-                        k1_winner = t1 if score[0] == 1 else t2
+                        # maps_score[0]=True → team1 (первый в slug) выиграл К1
+                        maps_s = m.get("maps_score") or []
+                        if maps_s:
+                            k1_winner = t1 if bool(maps_s[0]) else t2
+                        else:
+                            k1_winner = t1 if score[0] == 1 else t2
                         fav_won = (fav_name == k1_winner) if fav_name else None
                         if gk == "cs2":
                             if fav_won is True:
@@ -434,7 +439,14 @@ def monitor_loop():
                 # и мы по этому матчу ещё не алертили. Не зависит от game_ended.
                 if total == 1 and not already:
                     base = prev if prev is not None else (0, 0)
-                    winner = t1 if score[0] > base[0] else (t2 if score[1] > base[1] else (t1 if score[0] == 1 else t2))
+                    # maps_score[0]=True → team1 (первый в slug) выиграл К1
+                    maps = m.get("maps_score") or []
+                    if maps:
+                        t1_won_k1 = bool(maps[0])
+                        winner = t1 if t1_won_k1 else t2
+                    else:
+                        # fallback: кто ведёт в серии
+                        winner = t1 if score[0] > base[0] else (t2 if score[1] > base[1] else (t1 if score[0] == 1 else t2))
                     loser = t2 if winner == t1 else t1
                     with LOCK:
                         STATE["alerted"].add(akey)
