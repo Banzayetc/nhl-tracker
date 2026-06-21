@@ -721,29 +721,30 @@ button:active{opacity:.7}
 .lr.info{border-color:#2a2d3a}.lr.match{border-color:#378ADD;background:#0a1520}.lr.alert{border-color:#E24B4A;background:#200a0a}
 .lt{color:#444;min-width:44px;flex-shrink:0}
 .lm{color:#c0c0c0;line-height:1.5}.lm.am{color:#ff8080;font-weight:500}
-.ac{display:none;background:#250c0c;border:1px solid #E24B4A88;border-radius:11px;padding:12px;margin-bottom:10px;box-shadow:0 0 16px #E24B4A22}
+.ac{display:none;background:#1a0a0a;border:1px solid #E24B4A66;border-radius:10px;padding:10px 12px;margin-bottom:8px;box-shadow:0 0 12px #E24B4A18;max-width:480px}
 .ac.show{display:block}
-.ac .bd{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#ff8585;margin-bottom:7px;font-weight:600}
+.ac .bd{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#ff8585;margin-bottom:5px;font-weight:600}
 .ac .gm{display:inline-block;font-size:10px;background:#3a3d4a;color:#bbb;padding:2px 7px;border-radius:5px;margin-left:7px}
-.at{font-size:18px;font-weight:600;color:#fff;margin-bottom:3px}
-.am2{font-size:12px;color:#888;margin-bottom:9px}
-.wb{background:#0d2a1e;border:1px solid #1D9E7588;border-radius:8px;padding:8px 12px;margin-bottom:8px}
-.wb .wl{font-size:10px;color:#7FE3C2;text-transform:uppercase;letter-spacing:.08em;margin-bottom:2px}
-.wb .wn{font-size:16px;font-weight:600;color:#B8F0DD}
-.legs{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:8px}
-.leg{background:#161a26;border-radius:8px;padding:7px 11px}
-.leg .ll{font-size:10px;color:#777;margin-bottom:2px;text-transform:uppercase;letter-spacing:.06em}
-.leg .lv{font-size:13px;font-weight:500;color:#e0e0e0}
-.vb{border-radius:8px;padding:8px 12px;margin-bottom:7px}
-.vb .vl{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:.08em;margin-bottom:2px}
-.vb .vv{font-size:16px;font-weight:600}
-.vb .vt{font-size:11px;color:#777;margin-top:3px;word-break:break-word}
-.hint{font-size:11px;color:#aaa;background:#161a26;border-radius:7px;padding:7px 11px;line-height:1.45;margin-bottom:7px}
+.at{font-size:15px;font-weight:600;color:#fff;margin-bottom:2px}
+.am2{font-size:11px;color:#888;margin-bottom:6px}
+.wb{background:#0d2a1e;border:1px solid #1D9E7588;border-radius:7px;padding:6px 10px;margin-bottom:6px}
+.wb .wl{font-size:9px;color:#7FE3C2;text-transform:uppercase;letter-spacing:.08em;margin-bottom:1px}
+.wb .wn{font-size:13px;font-weight:600;color:#B8F0DD}
+.legs{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:6px}
+.leg{background:#161a26;border-radius:7px;padding:5px 9px}
+.leg .ll{font-size:9px;color:#777;margin-bottom:1px;text-transform:uppercase;letter-spacing:.06em}
+.leg .lv{font-size:12px;font-weight:500;color:#e0e0e0}
+.vb{border-radius:7px;padding:6px 10px;margin-bottom:5px}
+.vb .vl{font-size:9px;color:#888;text-transform:uppercase;letter-spacing:.08em;margin-bottom:1px}
+.vb .vv{font-size:13px;font-weight:600}
+.vb .vt{font-size:10px;color:#777;margin-top:2px;word-break:break-word}
+.hint{font-size:10px;color:#aaa;background:#161a26;border-radius:6px;padding:5px 9px;line-height:1.4;margin-bottom:5px}
 .dis{width:100%;background:#12151f;color:#555;border:1px solid #2a2d3a;border-radius:7px;padding:7px;font-size:12px;cursor:pointer}
-.pmlink{display:block;text-align:center;background:#13212e;color:#5BA3E0;border:1px solid #2a4a63;border-radius:7px;padding:9px;font-size:12px;text-decoration:none;margin-bottom:8px;font-weight:500}
+.pmlink{display:block;text-align:center;background:#13212e;color:#5BA3E0;border:1px solid #2a4a63;border-radius:6px;padding:7px;font-size:11px;text-decoration:none;margin-bottom:6px;font-weight:500}
 .pmlink:active{opacity:.7}
-.achead{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-.acx{background:none;border:none;color:#555;font-size:18px;cursor:pointer;padding:0 4px;line-height:1;width:auto;flex:none}
+.achead{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px}
+.acx{background:none;border:none;color:#555;font-size:16px;cursor:pointer;padding:0 4px;line-height:1;width:auto;flex:none}
+#alerts{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,480px));gap:8px;margin-bottom:12px}
 </style></head><body>
 <h1><div class="dot" id="dot"></div> Esports Bo3 Monitor</h1>
 
