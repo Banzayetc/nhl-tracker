@@ -364,6 +364,33 @@ def monitor_loop():
                     else:
                         roi_hint = "нет edge"
 
+                    # Уточнённый ROI по исходу К1 (только при счёте 1:0)
+                    roi_k1 = ""
+                    if window:  # счёт 1:0 — знаем кто взял К1
+                        # Определяем фаворита через bet_updates
+                        bu = m.get("bet_updates") or {}
+                        t1_agree = (bu.get("team_1") or {}).get("aggrement_score") or 0
+                        t2_agree = (bu.get("team_2") or {}).get("aggrement_score") or 0
+                        if t1_agree > t2_agree:
+                            fav_name = t1
+                        elif t2_agree > t1_agree:
+                            fav_name = t2
+                        else:
+                            fav_name = None
+                        # Кто ведёт в серии = кто взял К1
+                        k1_winner = t1 if score[0] == 1 else t2
+                        fav_won = (fav_name == k1_winner) if fav_name else None
+                        if gk == "cs2":
+                            if fav_won is True:
+                                roi_k1 = "фав взял → +57%"
+                            elif fav_won is False:
+                                roi_k1 = "апсет → +23%"
+                        elif gk in ("dota2", "valorant"):
+                            if fav_won is True:
+                                roi_k1 = "фав взял → +28%" if gk == "dota2" else "фав взял → +26%"
+                            elif fav_won is False:
+                                roi_k1 = "апсет → пропуск"
+
                     # Время старта по Киеву
                     sd = m.get("start_date", "")
                     try:
@@ -379,6 +406,7 @@ def monitor_loop():
                         "vol_text": vtext, "vol_color": vcolor,
                         "pm_url": purl,
                         "roi_hint": roi_hint,
+                        "roi_k1": roi_k1,
                         "start_kyiv": start_kyiv,
                     })
 
@@ -781,6 +809,9 @@ function renderLive(live){
     const roi = m.roi_hint
       ? `<span class="tag-vol" style="color:#888;border-color:#333;font-weight:400">${m.roi_hint}</span>`
       : '';
+    const roik1 = m.roi_k1
+      ? `<span class="tag-vol" style="color:#7FDDBB;border-color:#1D9E7555;font-weight:600">${m.roi_k1}</span>`
+      : '';
     const time = m.start_kyiv
       ? `<span class="tag-vol" style="color:#555;border-color:#2a2d3a;font-weight:400">⏰ ${m.start_kyiv}</span>`
       : '';
@@ -791,7 +822,7 @@ function renderLive(live){
       <span class="g">${m.game}</span>
       <span class="nm">${escapeHtml(m.t1)} vs ${escapeHtml(m.t2)}</span>
       <span class="sc">${m.s1}:${m.s2}</span>
-      ${time}${win}${vol}${roi}${link}
+      ${time}${win}${vol}${roi}${roik1}${link}
     </div>`;
   }).join('');
 }
