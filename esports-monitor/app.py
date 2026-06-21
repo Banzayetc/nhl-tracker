@@ -249,55 +249,63 @@ def momentum_hint(game):
 
 def roi_hint_alert(game, fav_won_k1, map_score_t1, map_score_t2, vol):
     """ROI подсказка для алерт-карточки с учётом кто взял К1 и счёта карты"""
-    # Базовый ROI по типу К1
     if game == "cs2":
-        if fav_won_k1:
-            base_roi = "+57%"
+        if fav_won_k1 is True:
             k1_label = "Фав взял К1 → BUY аутсайдер"
-        else:
-            base_roi = "+23%"
+            # ROI по разрыву (из бэктеста $55-250K, фав взял К1)
+            roi_by_margin = {(1,4): "+47%", (5,7): "+57%", (8,99): "+27%"}
+            base_roi = "+57%"  # медиана всей группы
+        elif fav_won_k1 is False:
             k1_label = "Апсет → BUY фаворит-камбэк"
+            # ROI по разрыву (из бэктеста $55-250K, апсет)
+            roi_by_margin = {(1,4): "+27%", (5,7): "+23%", (8,99): "+18%"}
+            base_roi = "+23%"  # медиана всей группы
+        else:
+            k1_label = "Визначаємо фаворита..."
+            roi_by_margin = {}
+            base_roi = "?"
     elif game == "dota2":
-        if fav_won_k1:
+        if fav_won_k1 is True:
+            k1_label = "Фав взяв К1 → BUY фаворит (сніжний ком)"
+            roi_by_margin = {(1,4): "+20%", (5,7): "+28%", (8,99): "+33%"}
             base_roi = "+28%"
-            k1_label = "Фав взял К1 → BUY фаворит (снежный ком)"
         else:
+            k1_label = "Апсет → пропуск (камбек збитковий)"
+            roi_by_margin = {}
             base_roi = "−"
-            k1_label = "Апсет → пропуск (камбэк убыточен)"
     elif game == "valorant":
-        if fav_won_k1:
+        if fav_won_k1 is True:
+            k1_label = "Фав взяв К1 → BUY фаворит (сніжний ком)"
+            roi_by_margin = {(1,4): "+15%", (5,7): "+26%", (8,99): "+22%"}
             base_roi = "+26%"
-            k1_label = "Фав взял К1 → BUY фаворит (снежный ком)"
         else:
-            base_roi = "−"
             k1_label = "Апсет → пропуск"
+            roi_by_margin = {}
+            base_roi = "−"
     else:
-        return "", ""
+        return "", "", "", ""
 
-    # Корректировка по счёту карты 1
+    # Счёт карты 1 → итоговый ROI
+    score_label = ""
     score_hint = ""
-    if map_score_t1 is not None and map_score_t2 is not None:
+    final_roi = base_roi
+
+    if map_score_t1 is not None and map_score_t2 is not None and roi_by_margin:
         margin = abs(int(map_score_t1) - int(map_score_t2))
         s1, s2 = int(map_score_t1), int(map_score_t2)
-        if margin <= 4:
-            score_label = f"Тесно ({s1}:{s2}, разрыв {margin})"
-            if game == "cs2":
-                score_hint = "→ ROI выше среднего (~+47%)"
-            else:
-                score_hint = "→ слабый снежный ком"
-        elif margin <= 7:
-            score_label = f"Средне ({s1}:{s2}, разрыв {margin})"
-            score_hint = "→ ROI стандартный"
-        else:
-            score_label = f"Разгром ({s1}:{s2}, разрыв {margin})"
-            if game == "cs2":
-                score_hint = "→ ROI ниже среднего (~+27%)"
-            else:
-                score_hint = "→ сильный снежный ком (~+33%)"
-    else:
-        score_label = ""
+        for (lo, hi), roi in roi_by_margin.items():
+            if lo <= margin <= hi:
+                final_roi = roi
+                if margin <= 4:
+                    score_label = f"Тесно ({s1}:{s2}, розрив {margin})"
+                elif margin <= 7:
+                    score_label = f"Середньо ({s1}:{s2}, розрив {margin})"
+                else:
+                    score_label = f"Розгром ({s1}:{s2}, розрив {margin})"
+                score_hint = f"→ Підсумковий ROI {roi}"
+                break
 
-    return k1_label, base_roi, score_label, score_hint
+    return k1_label, final_roi, score_label, score_hint
 
 # ── цикл мониторинга ───────────────────────────────────────────────────────────
 
@@ -862,7 +870,7 @@ function buildCard(a){
     </div>
     <div style="display:flex;gap:7px;margin-bottom:8px">
       <div class="vb" style="flex:1;border:1px solid #378ADD44;background:#0a1520">
-        <div class="vl">Базовий ROI</div>
+        <div class="vl">Підсумковий ROI</div>
         <div class="vv" style="color:#5BA3E0">${escapeHtml(a.base_roi)}</div>
       </div>
       ${a.score_label ? `<div class="vb" style="flex:2;border:1px solid #2a2d3a;background:#12151f">
