@@ -14,7 +14,7 @@ import threading
 import time
 import urllib.request
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 try:
     from zoneinfo import ZoneInfo
@@ -53,6 +53,7 @@ STATE = {
     "seen": {},              # match_id -> last score
     "alerted": set(),
     "vol_cache": {},         # match_id -> (vol, title, slug, game_key)
+    "upcoming": [],          # предстоящие матчи на 21ч вперёд
 }
 LOCK = threading.Lock()
 
@@ -100,6 +101,37 @@ def fetch_live(discipline_id):
         return data.get("results", [])
     except Exception as e:
         push_log(f"bo3.gg ошибка: {e}", "info")
+        return []
+
+def fetch_upcoming(discipline_id, hours=21):
+    """Предстоящие Bo3 матчи на следующие N часов"""
+    base = "https://api.bo3.gg/api/v1/matches"
+    params = {
+        "filter[matches.discipline_id][eq]": str(discipline_id),
+        "filter[matches.status][in]": "upcoming",
+        "page[limit]": "100",
+        "sort": "start_date",
+    }
+    url = base + "?" + urllib.parse.urlencode(params)
+    try:
+        data = http_get_json(url, timeout=8)
+        results = data.get("results", [])
+        now = datetime.now(timezone.utc)
+        cutoff = now.timestamp() + hours * 3600
+        filtered = []
+        for m in results:
+            sd = m.get("start_date", "")
+            if not sd:
+                continue
+            try:
+                dt = datetime.fromisoformat(sd.replace("Z", "+00:00"))
+                if dt.timestamp() <= cutoff:
+                    filtered.append(m)
+            except Exception:
+                pass
+        return filtered
+    except Exception as e:
+        push_log(f"bo3.gg upcoming ошибка: {e}", "info")
         return []
 
 def get_score(m):
@@ -330,6 +362,66 @@ def monitor_loop():
             if len(STATE["vol_cache"]) > 300:
                 STATE["vol_cache"] = {}
 
+        # Upcoming матчи — обновляем каждые 5 минут
+        try:
+            now_ts_int = int(time.time())
+            if now_ts_int % 300 < interval:
+                all_upcoming = []
+                for gk, on in games.items():
+                    if not on:
+                        continue
+                    disc = DISCIPLINES[gk]
+                    for m in fetch_upcoming(disc["id"], hours=21):
+                        if m.get("bo_type") != 3:
+                            continue
+                        t1, t2 = parse_slug(m.get("slug", ""))
+                        sd = m.get("start_date", "")
+                        # Время до матча
+                        try:
+                            dt = datetime.fromisoformat(sd.replace("Z", "+00:00"))
+                            now_utc = datetime.now(timezone.utc)
+                            diff_h = (dt.timestamp() - now_utc.timestamp()) / 3600
+                            if KYIV:
+                                kyiv_time = dt.astimezone(KYIV).strftime("%d.%m %H:%M")
+                            else:
+                                kyiv_time = dt.strftime("%d.%m %H:%M")
+                        except Exception:
+                            diff_h = 99
+                            kyiv_time = sd[:16]
+
+                        # Объём с кеша
+                        mid = m["id"]
+                        ck = f"up_{mid}"
+                        with LOCK:
+                            cached = STATE["vol_cache"].get(ck)
+                        if cached is None:
+                            cvol, ctitle, cslug = pm_volume(t1, t2, disc["pm_tag"])
+                            with LOCK:
+                                STATE["vol_cache"][ck] = (cvol, ctitle, cslug)
+                        else:
+                            cvol, ctitle, cslug = cached
+
+                        vtext, vcolor = vol_verdict(cvol, gk)
+                        purl = f"https://polymarket.com/event/{cslug}" if cslug else ""
+
+                        all_upcoming.append({
+                            "game": disc["label"],
+                            "t1": t1, "t2": t2,
+                            "kyiv_time": kyiv_time,
+                            "diff_h": round(diff_h, 1),
+                            "vol_text": vtext,
+                            "vol_color": vcolor,
+                            "pm_url": purl,
+                            "tier": m.get("tier", ""),
+                        })
+
+                # Сортируем по времени
+                all_upcoming.sort(key=lambda x: x["diff_h"])
+                with LOCK:
+                    STATE["upcoming"] = all_upcoming
+        except Exception as e:
+            push_log(f"upcoming ошибка: {e}", "info")
+
         # спим интервал, но реагируем на стоп
         for _ in range(interval):
             with LOCK:
@@ -363,6 +455,7 @@ class Handler(BaseHTTPRequestHandler):
                     "live": STATE["live"],
                     "log": STATE["log"][-60:],
                     "alerts": STATE["alerts"],
+                    "upcoming": STATE["upcoming"],
                 }
             self._send(200, "application/json", json.dumps(payload, ensure_ascii=False))
         else:
@@ -450,6 +543,15 @@ button:active{opacity:.7}
 .tag-link{margin-left:auto;color:#5BA3E0;text-decoration:none;font-size:15px;padding:0 4px}
 .tag-link:active{opacity:.6}
 .nolive{font-size:12px;color:#444;font-style:italic}
+.upcoming{margin-bottom:12px}
+.upcoming h2{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:#555;margin-bottom:8px}
+.urow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#12151f;border:1px solid #2a2d3a;border-radius:9px;padding:7px 11px;font-size:13px;margin-bottom:5px}
+.urow .ut{font-size:10px;color:#444;background:#1a1d27;padding:2px 7px;border-radius:4px;text-transform:uppercase;min-width:34px;text-align:center}
+.urow .unm{font-weight:500;color:#e0e0e0;flex:1}
+.urow .utime{font-size:12px;color:#666;white-space:nowrap}
+.urow .uvol{font-size:11px;font-weight:600;padding:2px 8px;border-radius:5px;background:#12151f;border:1px solid #333}
+.urow .ulink{color:#5BA3E0;text-decoration:none;font-size:15px;padding:0 2px}
+.urow .ulink:active{opacity:.6}
 .logw{background:#1a1d27;border:1px solid #2a2d3a;border-radius:12px;overflow:hidden}
 .logh{padding:8px 14px;border-bottom:1px solid #2a2d3a;font-size:11px;color:#444}
 .logb{height:170px;overflow-y:auto;padding:4px 0;font-size:12px}
@@ -487,6 +589,8 @@ button:active{opacity:.7}
 
 <div class="live"><h2>Live матчи</h2><div id="live"><span class="nolive">—</span></div></div>
 
+<div class="upcoming"><h2>📅 Ближайшие матчи (21ч)</h2><div id="upcoming"><span class="nolive">—</span></div></div>
+
 <div class="card">
 <h2>Игры</h2>
 <div class="games">
@@ -523,6 +627,24 @@ function renderLog(log){
   const b=document.getElementById('log');
   b.innerHTML=log.map(e=>`<div class="lr ${e.level}"><span class="lt">${e.ts}</span><span class="lm ${e.level==='alert'?'am':''}">${e.msg}</span></div>`).join('');
   b.scrollTop=b.scrollHeight;
+}
+
+function renderUpcoming(upcoming){
+  const el=document.getElementById('upcoming');
+  if(!upcoming||!upcoming.length){el.innerHTML='<span class="nolive">Нет запланированных матчей</span>';return}
+  el.innerHTML=upcoming.map(m=>{
+    const vol=m.vol_text&&m.vol_text!=='?'
+      ?`<span class="uvol" style="color:${m.vol_color};border-color:${m.vol_color}55">${m.vol_text}</span>`
+      :`<span class="uvol" style="color:#555;border-color:#333">нет рынка</span>`;
+    const link=m.pm_url?`<a class="ulink" href="${m.pm_url}" target="_blank">↗</a>`:'';
+    const diffStr=m.diff_h<1?`${Math.round(m.diff_h*60)}мин`:`${m.diff_h.toFixed(1)}ч`;
+    return `<div class="urow">
+      <span class="ut">${escapeHtml(m.game)}</span>
+      <span class="unm">${escapeHtml(m.t1)} vs ${escapeHtml(m.t2)}</span>
+      <span class="utime">⏰ ${m.kyiv_time} (через ${diffStr})</span>
+      ${vol}${link}
+    </div>`;
+  }).join('');
 }
 
 function renderLive(live){
@@ -604,7 +726,7 @@ async function poll(){
   try{
     const r=await fetch('/state');const s=await r.json();
     running=s.running;const hasAlerts=document.getElementById('alerts').children.length>0;dot(running?(hasAlerts?'alert':'on'):(hasAlerts?'alert':''));
-    renderLog(s.log);renderLive(s.live);
+    renderLog(s.log);renderLive(s.live);renderUpcoming(s.upcoming||[]);
     if(s.alerts)s.alerts.forEach(showAlert);
   }catch(e){}
 }
