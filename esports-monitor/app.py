@@ -247,6 +247,58 @@ def momentum_hint(game):
         return "Valorant: ставь ЗА фаворита если он взял К1 (снежный ком). Против победителя −37%."
     return ""
 
+def roi_hint_alert(game, fav_won_k1, map_score_t1, map_score_t2, vol):
+    """ROI подсказка для алерт-карточки с учётом кто взял К1 и счёта карты"""
+    # Базовый ROI по типу К1
+    if game == "cs2":
+        if fav_won_k1:
+            base_roi = "+57%"
+            k1_label = "Фав взял К1 → BUY аутсайдер"
+        else:
+            base_roi = "+23%"
+            k1_label = "Апсет → BUY фаворит-камбэк"
+    elif game == "dota2":
+        if fav_won_k1:
+            base_roi = "+28%"
+            k1_label = "Фав взял К1 → BUY фаворит (снежный ком)"
+        else:
+            base_roi = "−"
+            k1_label = "Апсет → пропуск (камбэк убыточен)"
+    elif game == "valorant":
+        if fav_won_k1:
+            base_roi = "+26%"
+            k1_label = "Фав взял К1 → BUY фаворит (снежный ком)"
+        else:
+            base_roi = "−"
+            k1_label = "Апсет → пропуск"
+    else:
+        return "", ""
+
+    # Корректировка по счёту карты 1
+    score_hint = ""
+    if map_score_t1 is not None and map_score_t2 is not None:
+        margin = abs(int(map_score_t1) - int(map_score_t2))
+        s1, s2 = int(map_score_t1), int(map_score_t2)
+        if margin <= 4:
+            score_label = f"Тесно ({s1}:{s2}, разрыв {margin})"
+            if game == "cs2":
+                score_hint = "→ ROI выше среднего (~+47%)"
+            else:
+                score_hint = "→ слабый снежный ком"
+        elif margin <= 7:
+            score_label = f"Средне ({s1}:{s2}, разрыв {margin})"
+            score_hint = "→ ROI стандартный"
+        else:
+            score_label = f"Разгром ({s1}:{s2}, разрыв {margin})"
+            if game == "cs2":
+                score_hint = "→ ROI ниже среднего (~+27%)"
+            else:
+                score_hint = "→ сильный снежный ком (~+33%)"
+    else:
+        score_label = ""
+
+    return k1_label, base_roi, score_label, score_hint
+
 # ── цикл мониторинга ───────────────────────────────────────────────────────────
 
 def monitor_loop():
@@ -364,6 +416,27 @@ def monitor_loop():
                     pm_url = f"https://polymarket.com/event/{pm_slug}" if pm_slug else ""
                     push_log(f"   {vtext}", "alert")
 
+                    # Счёт карты 1 из bo3.gg
+                    ms1 = m.get("team1_last_game_score")
+                    ms2 = m.get("team2_last_game_score")
+
+                    # Кто победитель — фаворит или аутсайдер?
+                    # Определяем через bet_updates: выше aggrement_score = фаворит
+                    bu = m.get("bet_updates") or {}
+                    t1_agree = (bu.get("team_1") or {}).get("aggrement_score") or 0
+                    t2_agree = (bu.get("team_2") or {}).get("aggrement_score") or 0
+                    if t1_agree > t2_agree:
+                        fav_name = t1
+                    elif t2_agree > t1_agree:
+                        fav_name = t2
+                    else:
+                        fav_name = None
+                    fav_won_k1 = (fav_name == winner) if fav_name else None
+
+                    k1_label, base_roi, score_label, score_hint = roi_hint_alert(
+                        gk, fav_won_k1, ms1, ms2, vol
+                    )
+
                     with LOCK:
                         STATE["alerts"].append({
                             "id": int(time.time() * 1000),
@@ -376,6 +449,11 @@ def monitor_loop():
                             "pm_url": pm_url,
                             "hint": momentum_hint(gk),
                             "finished_at": now_ts(),
+                            "k1_label": k1_label,
+                            "base_roi": base_roi,
+                            "score_label": score_label,
+                            "score_hint": score_hint,
+                            "map_score": f"{ms1}:{ms2}" if ms1 is not None else "",
                         })
                         STATE["alerts"] = STATE["alerts"][-5:]
 
@@ -728,22 +806,42 @@ function buildCard(a){
     ? `<a class="pmlink" href="${a.pm_url}" target="_blank">↗ Открыть на Polymarket</a>`
     : '';
   const fin = a.finished_at ? ` · ${a.finished_at} КИЇВ` : '';
+  const mapScore = a.map_score
+    ? `<div class="am2">Счёт серии: ${a.score} &nbsp;|&nbsp; Рахунок К1: <b>${a.map_score}</b></div>`
+    : `<div class="am2">Счёт: ${a.score}</div>`;
+  const roiBlock = a.k1_label ? `
+    <div class="wb" style="margin-bottom:7px">
+      <div class="wl">Стратегія</div>
+      <div class="wn" style="font-size:14px">${escapeHtml(a.k1_label)}</div>
+    </div>
+    <div style="display:flex;gap:7px;margin-bottom:8px">
+      <div class="vb" style="flex:1;border:1px solid #378ADD44;background:#0a1520">
+        <div class="vl">Базовий ROI</div>
+        <div class="vv" style="color:#5BA3E0">${escapeHtml(a.base_roi)}</div>
+      </div>
+      ${a.score_label ? `<div class="vb" style="flex:2;border:1px solid #2a2d3a;background:#12151f">
+        <div class="vl">Рахунок К1</div>
+        <div class="vv" style="color:#e0e0e0;font-size:13px">${escapeHtml(a.score_label)}</div>
+        <div class="vt">${escapeHtml(a.score_hint)}</div>
+      </div>` : ''}
+    </div>` : '';
   return `<div class="ac show" data-id="${a.id}">
     <div class="achead">
       <div class="bd">🚨 Карта 1 завершена${fin}<span class="gm">${escapeHtml(a.game)}</span></div>
       <button class="acx" onclick="closeCard(${a.id})">✕</button>
     </div>
     <div class="at">${escapeHtml(a.t1)} vs ${escapeHtml(a.t2)}</div>
-    <div class="am2">Счёт: ${a.score}</div>
+    ${mapScore}
     <div class="wb"><div class="wl">Взял К1</div><div class="wn">✅ ${escapeHtml(a.winner)}</div></div>
     <div class="legs">
-      <div class="leg"><div class="ll">Нога 1 — BUY серию</div><div class="lv">${escapeHtml(a.winner)}</div></div>
+      <div class="leg"><div class="ll">Нога 1 — BUY серію</div><div class="lv">${escapeHtml(a.winner)}</div></div>
       <div class="leg"><div class="ll">Нога 2 — BUY карту 2</div><div class="lv">${escapeHtml(a.loser)}</div></div>
     </div>
+    ${roiBlock}
     <div class="vb" style="border:1px solid ${a.vol_color}66;background:${a.vol_color}1a">
-      <div class="vl">Объём Polymarket</div>
+      <div class="vl">Об'єм Polymarket</div>
       <div class="vv" style="color:${a.vol_color}">${escapeHtml(a.vol_text)}</div>
-      <div class="vt">${escapeHtml(a.pm_title)||'Рынок не найден'}</div>
+      <div class="vt">${escapeHtml(a.pm_title)||'Ринок не знайдено'}</div>
     </div>
     ${pmLink}
     <div class="hint">${escapeHtml(a.hint)}</div>
@@ -786,7 +884,7 @@ function start(){
     body:JSON.stringify({games:getGames(),interval:parseInt(document.getElementById('iv').value)||20,min_tier:document.getElementById('tier').value})});
 }
 function stop(){fetch('/stop',{method:'POST'})}
-function test(){const t=new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Kyiv'});showAlert({id:Date.now(),game:'CS2',t1:'Team Spirit',t2:'NAVI',score:'1:0',winner:'Team Spirit',loser:'NAVI',vol_text:'🟢 ЖИР  $87,000',vol_color:'#1D9E75',pm_title:'Counter-Strike: Spirit vs NAVI (BO3) - IEM Cologne',pm_url:'https://polymarket.com/event/cs2-aaa-inf1-2026-03-10',hint:'CS2: ставь ПРОТИВ победителя К1 (фав взял→BUY аутсайдер)',finished_at:t})}
+function test(){const t=new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Kyiv'});showAlert({id:Date.now(),game:'CS2',t1:'Team Spirit',t2:'NAVI',score:'1:0',winner:'Team Spirit',loser:'NAVI',vol_text:'🟢 ЖИР  $87,000',vol_color:'#1D9E75',pm_title:'Counter-Strike: Spirit vs NAVI (BO3) - IEM Cologne',pm_url:'https://polymarket.com/event/cs2-aaa-inf1-2026-03-10',hint:'CS2: ставь ПРОТИВ победителя К1 (фав взял→BUY аутсайдер)',finished_at:t,k1_label:'Фав взял К1 → BUY аутсайдер',base_roi:'+57%',score_label:'Тесно (16:12, разрыв 4)',score_hint:'→ ROI вище середнього (~+47%)',map_score:'16:12'})}
 
 setInterval(poll,2000);poll();
 </script></body></html>"""
