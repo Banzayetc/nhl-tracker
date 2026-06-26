@@ -618,6 +618,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "text/html; charset=utf-8", PAGE)
         elif self.path == "/ping":
             self._send(200, "text/plain", "pong")
+        elif self.path.startswith("/weather"):
+            try:
+                payload = scan_weather()
+            except Exception as e:
+                payload = {"events": [], "error": str(e)}
+            self._send(200, "application/json", json.dumps(payload, ensure_ascii=False))
         elif self.path.startswith("/state"):
             with LOCK:
                 payload = {
@@ -671,6 +677,96 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *a):
         pass
+
+# ── ПОГОДА (дневные температуры Polymarket, tag_id=84) ───────────────────────────
+# Стратегия (измерено на 150 событиях): за ~24ч до конца рынка покупать ФАВОРИТА
+# (бакет с макс. ценой) — вход ~40¢, реально выигрывает 48.6%, перекос +8.5пп, t=2.10,
+# ROI +21% валовых. Плечи 10-30¢ переоценены → их фейдить. Прогноз НЕ помогает (basis risk).
+WEATHER_TAG = 84
+
+def _wx_price(m):
+    for k in ("lastTradePrice", "bestAsk"):
+        v = m.get(k)
+        if v not in (None, ""):
+            try:
+                return float(v)
+            except Exception:
+                pass
+    op = m.get("outcomePrices")
+    try:
+        if isinstance(op, str):
+            op = json.loads(op)
+        return float(op[0])
+    except Exception:
+        return None
+
+def _wx_signal(h):
+    if h is None:
+        return ("—", "#555")
+    if h > 36:
+        return ("⏳ рано", "#666")
+    if h >= 14:
+        return ("🟢 ВХІД (−24г)", "#1D9E75")
+    if h >= 5:
+        return ("🟡 пізнувато", "#D9A441")
+    if h >= 0:
+        return ("🔴 пізно", "#E24B4A")
+    return ("—", "#555")
+
+def scan_weather():
+    import time as _t
+    url = ("https://gamma-api.polymarket.com/events?tag_id=%d"
+           "&closed=false&limit=100&order=volume&ascending=false" % WEATHER_TAG)
+    ev = http_get_json(url) or []
+    now = _t.time()
+    out = []
+    for e in ev:
+        title = e.get("title", "")
+        mm = re.search(r"temperature in (.+?) on (\w+ \d+)", title, re.I)
+        if not mm:
+            continue
+        mks = e.get("markets", [])
+        if len(mks) < 3:
+            continue
+        buckets = []
+        end_ts = None
+        for m in mks:
+            p = _wx_price(m)
+            if p is None:
+                continue
+            buckets.append({"lab": m.get("groupItemTitle") or "", "p": p})
+            if end_ts is None and m.get("endDate"):
+                try:
+                    end_ts = datetime.fromisoformat(
+                        m["endDate"].replace("Z", "+00:00")).timestamp()
+                except Exception:
+                    pass
+        if len(buckets) < 3:
+            continue
+        buckets.sort(key=lambda b: -b["p"])
+        fav = buckets[0]
+        shoulders = [b for b in buckets[1:] if 0.10 <= b["p"] < 0.30]
+        h = round((end_ts - now) / 3600, 1) if end_ts else None
+        sig, col = _wx_signal(h)
+        out.append({
+            "city": mm.group(1).strip(),
+            "date": mm.group(2),
+            "hours": h,
+            "fav_lab": fav["lab"],
+            "fav_px": round(fav["p"] * 100, 1),
+            "shoulders": [{"lab": b["lab"], "px": round(b["p"] * 100, 1)} for b in shoulders],
+            "signal": sig,
+            "sig_color": col,
+            "url": "https://polymarket.com/event/" + (e.get("slug", "") or ""),
+        })
+
+    def _sk(x):
+        h = x["hours"]
+        if h is None:
+            return (9, 999)
+        return (0 if 14 <= h <= 36 else 1, abs(h - 24))
+    out.sort(key=_sk)
+    return {"events": out}
 
 PAGE = r"""<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -753,8 +849,33 @@ button:active{opacity:.7}
 .achead{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px}
 .acx{background:none;border:none;color:#555;font-size:16px;cursor:pointer;padding:0 4px;line-height:1;width:auto;flex:none}
 #alerts{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,480px));gap:8px;margin-bottom:12px}
+.tabs{display:flex;gap:6px;margin-bottom:14px}
+.tabbtn{flex:1;text-align:center;background:#12151f;border:1px solid #2a2d3a;border-radius:9px;padding:10px;font-size:14px;font-weight:600;color:#888;cursor:pointer;user-select:none;transition:.15s}
+.tabbtn.on{background:#13212e;border-color:#5BA3E0;color:#9fcdf0}
+.wxrow{background:#1a1d27;border:1px solid #2a2d3a;border-radius:11px;padding:11px 13px;margin-bottom:8px}
+.wxhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.wxcity{font-size:14px;font-weight:600;color:#fff}
+.wxdate{font-size:11px;color:#666}
+.wxsig{font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-left:auto}
+.wxhrs{font-size:11px;color:#888;background:#12151f;border:1px solid #2a2d3a;padding:3px 8px;border-radius:6px}
+.wxfav{background:#0d2a1e;border:1px solid #1D9E7588;border-radius:8px;padding:7px 11px;margin-bottom:7px;display:flex;align-items:center;gap:10px}
+.wxfav .fl{font-size:9px;color:#7FE3C2;text-transform:uppercase;letter-spacing:.07em}
+.wxfav .fb{font-size:16px;font-weight:700;color:#B8F0DD}
+.wxfav .fp{margin-left:auto;font-size:14px;font-weight:700;color:#7FDDBB;font-variant-numeric:tabular-nums}
+.wxsh{font-size:11px;color:#aaa;background:#1c1416;border:1px solid #5a303088;border-radius:7px;padding:6px 10px;margin-bottom:7px;line-height:1.5}
+.wxsh b{color:#ff9a9a}
+.wxlink{display:block;text-align:center;background:#13212e;color:#5BA3E0;border:1px solid #2a4a63;border-radius:6px;padding:6px;font-size:11px;text-decoration:none;font-weight:500}
+.wxlink:active{opacity:.7}
+.wxempty{font-size:12px;color:#444;font-style:italic}
 </style></head><body>
-<h1><div class="dot" id="dot"></div> Esports Bo3 Monitor</h1>
+<h1><div class="dot" id="dot"></div> Bo3 Monitor</h1>
+
+<div class="tabs">
+<div class="tabbtn on" data-tab="esports" onclick="switchTab(this)">⚔️ Кибер</div>
+<div class="tabbtn" data-tab="weather" onclick="switchTab(this)">🌡 Погода</div>
+</div>
+
+<div id="tab-esports">
 
 <div id="alerts"></div>
 
@@ -782,6 +903,25 @@ button:active{opacity:.7}
 </div>
 
 <div class="logw"><div class="logh">Лог</div><div class="logb" id="log"></div></div>
+
+</div><!-- /tab-esports -->
+
+<div id="tab-weather" style="display:none">
+<div class="card" style="border-color:#2a4a63;background:#10202c">
+<h2 style="color:#5BA3E0">🌡 Погодний алерт · дневные температуры</h2>
+<div style="font-size:11px;color:#9fb6c8;line-height:1.5">
+Стратегія (виміряно на 150 подіях): за <b>~24г до кінця ринку</b> купувати <b>фаворита</b>
+(бакет з макс. ціною). Вхід ~40¢ → реально виграє <b>48.6%</b> · перекіс <b>+8.5пп</b> · t=2.10 · ROI ~<b>+21%</b> валових.
+Плечі <b>10–30¢</b> переоцінені → їх фейдити. Прогноз погоди НЕ допомагає (basis risk 80%).
+</div>
+</div>
+<div class="btns">
+<button class="start" onclick="loadWx()">🔄 Оновити ринки</button>
+<button class="test" onclick="wxAuto()" id="wxautobtn" title="Авто-оновлення">⏱</button>
+</div>
+<div id="wxstatus" style="font-size:11px;color:#555;margin-bottom:10px">—</div>
+<div id="wxlist"></div>
+</div><!-- /tab-weather -->
 
 <script>
 let lastAlertId=0, lastLogLen=0, running=false;
@@ -939,6 +1079,55 @@ function start(){
 }
 function stop(){fetch('/stop',{method:'POST'})}
 function test(){const t=new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Kyiv'});showAlert({id:Date.now(),game:'CS2',t1:'Team Spirit',t2:'NAVI',score:'1:0',winner:'Team Spirit',loser:'NAVI',vol_text:'🟢 ЖИР  $87,000',vol_color:'#1D9E75',pm_title:'Counter-Strike: Spirit vs NAVI (BO3) - IEM Cologne',pm_url:'',hint:'CS2: ставь ПРОТИВ победителя К1 (фав взял→BUY аутсайдер)',finished_at:t,k1_label:'Фав взял К1 → BUY аутсайдер',base_roi:'+57%',score_label:'Тесно (16:12, разрыв 4)',score_hint:'→ ROI вище середнього (~+47%)',map_score:'16:12'})}
+
+function switchTab(el){
+  document.querySelectorAll('.tabbtn').forEach(b=>b.classList.remove('on'));
+  el.classList.add('on');
+  const t=el.dataset.tab;
+  document.getElementById('tab-esports').style.display = t==='esports'?'':'none';
+  document.getElementById('tab-weather').style.display = t==='weather'?'':'none';
+  if(t==='weather' && !wxLoaded){loadWx()}
+}
+let wxLoaded=false, wxTimer=null;
+async function loadWx(){
+  const st=document.getElementById('wxstatus');st.textContent='завантаження…';
+  try{
+    const r=await fetch('/weather');const d=await r.json();
+    renderWx(d.events||[]);
+    const t=new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit'});
+    st.textContent=(d.events?d.events.length:0)+' ринків · оновлено '+t+(d.error?(' · помилка: '+d.error):'');
+    wxLoaded=true;
+  }catch(e){st.textContent='помилка завантаження'}
+}
+function renderWx(evs){
+  const box=document.getElementById('wxlist');
+  if(!evs.length){box.innerHTML='<span class="wxempty">Немає відкритих погодних ринків</span>';return}
+  box.innerHTML=evs.map(e=>{
+    const hrs = e.hours==null?'—':(e.hours<0?'завершено':e.hours+'г');
+    const sh = e.shoulders && e.shoulders.length
+      ? `<div class="wxsh">🔻 Фейдити плечі: ${e.shoulders.map(s=>`<b>${escapeHtml(s.lab)}</b> ${s.px}¢`).join(' · ')}</div>`
+      : '';
+    const link = e.url ? `<a class="wxlink" href="${e.url}" target="_blank">↗ Відкрити на Polymarket</a>` : '';
+    return `<div class="wxrow">
+      <div class="wxhead">
+        <span class="wxcity">${escapeHtml(e.city)}</span>
+        <span class="wxdate">${escapeHtml(e.date)}</span>
+        <span class="wxhrs">⏳ ${hrs} до кінця</span>
+        <span class="wxsig" style="color:${e.sig_color};background:${e.sig_color}1a;border:1px solid ${e.sig_color}55">${escapeHtml(e.signal)}</span>
+      </div>
+      <div class="wxfav">
+        <div><div class="fl">Купити фаворита</div><div class="fb">${escapeHtml(e.fav_lab)}</div></div>
+        <span class="fp">${e.fav_px}¢</span>
+      </div>
+      ${sh}${link}
+    </div>`;
+  }).join('');
+}
+function wxAuto(){
+  const b=document.getElementById('wxautobtn');
+  if(wxTimer){clearInterval(wxTimer);wxTimer=null;b.style.color='#888';b.style.borderColor='#2a2d3a'}
+  else{loadWx();wxTimer=setInterval(loadWx,60000);b.style.color='#7FDDBB';b.style.borderColor='#1D9E75'}
+}
 
 setInterval(poll,2000);poll();
 </script></body></html>"""
