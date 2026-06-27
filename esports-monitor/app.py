@@ -56,6 +56,7 @@ STATE = {
     "upcoming": [],          # предстоящие матчи на 21ч вперёд
     "diag": [],              # ВРЕМЕННО: журнал переходов фаз для проверки источника
     "diag_seen": {},         # match_id -> последняя сигнатура (ps,s1,s2,cov,lu)
+    "sounds": [],            # звуковые события фаз (m1start/m1end/m2end)
 }
 LOCK = threading.Lock()
 
@@ -70,6 +71,13 @@ def push_log(msg, level="info"):
     with LOCK:
         STATE["log"].append({"ts": now_ts(), "msg": msg, "level": level})
         STATE["log"] = STATE["log"][-200:]
+
+def emit_sound(phase, t1, t2, game):
+    # звуковая фаза: m1start | m1end | m2end (фронт проговаривает голосом)
+    with LOCK:
+        STATE["sounds"].append({"id": int(time.time() * 1000), "phase": phase,
+                                "t1": t1, "t2": t2, "game": game, "ts": now_ts()})
+        STATE["sounds"] = STATE["sounds"][-12:]
 
 def http_get_json(url, timeout=10):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -459,6 +467,8 @@ def monitor_loop():
                     with LOCK:
                         STATE["seen"][mid] = score
                     push_log(f"📡 [{disc['label']}] {t1} vs {t2}  [{score[0]}:{score[1]}]", "match")
+                    if total == 0:
+                        emit_sound("m1start", t1, t2, disc["label"])   # матч вышел в эфир = старт К1
                     # если матч впервые увиден уже на 1:0 — это тоже окно входа, алертим
                     if total != 1:
                         continue
@@ -474,6 +484,7 @@ def monitor_loop():
                     loser = t2 if winner == t1 else t1
                     with LOCK:
                         STATE["alerted"].add(akey)
+                    emit_sound("m1end", t1, t2, disc["label"])   # К1 завершена = сигнал входа
 
                     push_log(f"🚨 [{disc['label']}] КАРТА 1: {t1} vs {t2} → {winner}", "alert")
                     vol, pm_title, pm_slug = pm_volume(t1, t2, disc["pm_tag"])
@@ -522,6 +533,9 @@ def monitor_loop():
                             "map_score": f"{ms1}:{ms2}" if ms1 is not None else "",
                         })
                         STATE["alerts"] = STATE["alerts"][-5:]
+
+                if prev is not None and prev_total == 1 and total == 2:
+                    emit_sound("m2end", t1, t2, disc["label"])   # К2 завершена (1:1 / 2:0)
 
                 with LOCK:
                     STATE["seen"][mid] = score
@@ -651,6 +665,7 @@ class Handler(BaseHTTPRequestHandler):
                     "live": STATE["live"],
                     "log": STATE["log"][-60:],
                     "alerts": STATE["alerts"],
+                    "sounds": STATE["sounds"],
                     "upcoming": STATE["upcoming"],
                 }
             self._send(200, "application/json", json.dumps(payload, ensure_ascii=False))
@@ -1016,6 +1031,23 @@ button:active{opacity:.7}
 let lastAlertId=0, lastLogLen=0, running=false;
 
 function beep(){try{const c=new(window.AudioContext||window.webkitAudioContext)();[[880,0],[660,.2],[880,.4]].forEach(([freq,t])=>{const o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.frequency.value=freq;o.type='sine';g.gain.setValueAtTime(1.0,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+.2);o.start(c.currentTime+t);o.stop(c.currentTime+t+.21)})}catch(e){}}
+function tones(seq,gain){try{const c=new(window.AudioContext||window.webkitAudioContext)();seq.forEach(([f,t])=>{const o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.frequency.value=f;o.type='sine';g.gain.setValueAtTime(gain,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+.22);o.start(c.currentTime+t);o.stop(c.currentTime+t+.23)})}catch(e){}}
+function speak(txt){try{if(!window.speechSynthesis)return;const u=new SpeechSynthesisUtterance(txt);u.lang='en-US';u.volume=1;u.rate=.95;u.pitch=1;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
+function playPhase(p){
+  if(p==='m1start'){tones([[520,0],[680,.18]],.55);speak('Map one start');}
+  else if(p==='m1end'){tones([[880,0],[660,.2],[880,.4],[990,.6]],1.0);speak('Map one end');}
+  else if(p==='m2end'){tones([[760,0],[560,.2],[440,.4]],.8);speak('Map two end');}
+}
+let playedSounds=[], soundsSeeded=false;
+function processSounds(arr){
+  if(!arr)return;
+  if(!soundsSeeded){ playedSounds=arr.map(s=>s.id); soundsSeeded=true; return; } // не «взрывать» при загрузке
+  arr.forEach(s=>{
+    if(!s||playedSounds.includes(s.id))return;
+    playedSounds.push(s.id); if(playedSounds.length>40)playedSounds=playedSounds.slice(-40);
+    playPhase(s.phase); dot('alert');
+  });
+}
 
 function dot(s){document.getElementById('dot').className='dot'+(s?' '+s:'')}
 
@@ -1135,7 +1167,7 @@ function showAlert(a){
   if(!a||shownIds.includes(a.id))return;
   shownIds.push(a.id);
   if(shownIds.length>MAX_ALERTS)shownIds=shownIds.slice(-MAX_ALERTS);
-  beep();dot('alert');
+  dot('alert');
 
   const box=document.getElementById('alerts');
   box.insertAdjacentHTML('afterbegin', buildCard(a));
@@ -1158,6 +1190,7 @@ async function poll(){
     running=s.running;const hasAlerts=document.getElementById('alerts').children.length>0;dot(running?(hasAlerts?'alert':'on'):(hasAlerts?'alert':''));
     renderLog(s.log);renderLive(s.live);renderUpcoming(s.upcoming||[]);
     if(s.alerts)s.alerts.forEach(showAlert);
+    processSounds(s.sounds);
   }catch(e){}
 }
 
@@ -1167,7 +1200,7 @@ function start(){
     body:JSON.stringify({games:getGames(),interval:parseInt(document.getElementById('iv').value)||20,min_tier:document.getElementById('tier').value})});
 }
 function stop(){fetch('/stop',{method:'POST'})}
-function test(){const t=new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Kyiv'});showAlert({id:Date.now(),game:'CS2',t1:'Team Spirit',t2:'NAVI',score:'1:0',winner:'Team Spirit',loser:'NAVI',vol_text:'🟢 ЖИР  $87,000',vol_color:'#1D9E75',pm_title:'Counter-Strike: Spirit vs NAVI (BO3) - IEM Cologne',pm_url:'',hint:'CS2: ставь ПРОТИВ победителя К1 (фав взял→BUY аутсайдер)',finished_at:t,k1_label:'Фав взял К1 → BUY аутсайдер',base_roi:'+57%',score_label:'Тесно (16:12, разрыв 4)',score_hint:'→ ROI вище середнього (~+47%)',map_score:'16:12'})}
+function test(){playPhase('m1start');setTimeout(()=>playPhase('m1end'),1700);setTimeout(()=>playPhase('m2end'),3600);const t=new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Kyiv'});showAlert({id:Date.now(),game:'CS2',t1:'Team Spirit',t2:'NAVI',score:'1:0',winner:'Team Spirit',loser:'NAVI',vol_text:'🟢 ЖИР  $87,000',vol_color:'#1D9E75',pm_title:'Counter-Strike: Spirit vs NAVI (BO3) - IEM Cologne',pm_url:'',hint:'CS2: ставь ПРОТИВ победителя К1 (фав взял→BUY аутсайдер)',finished_at:t,k1_label:'Фав взял К1 → BUY аутсайдер',base_roi:'+57%',score_label:'Тесно (16:12, разрыв 4)',score_hint:'→ ROI вище середнього (~+47%)',map_score:'16:12'})}
 
 function switchTab(el){
   document.querySelectorAll('.tabbtn').forEach(b=>b.classList.remove('on'));
