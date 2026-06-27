@@ -1032,11 +1032,21 @@ let lastAlertId=0, lastLogLen=0, running=false;
 
 function beep(){try{const c=new(window.AudioContext||window.webkitAudioContext)();[[880,0],[660,.2],[880,.4]].forEach(([freq,t])=>{const o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.frequency.value=freq;o.type='sine';g.gain.setValueAtTime(1.0,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+.2);o.start(c.currentTime+t);o.stop(c.currentTime+t+.21)})}catch(e){}}
 function tones(seq,gain){try{const c=new(window.AudioContext||window.webkitAudioContext)();seq.forEach(([f,t])=>{const o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.frequency.value=f;o.type='sine';g.gain.setValueAtTime(gain,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+.22);o.start(c.currentTime+t);o.stop(c.currentTime+t+.23)})}catch(e){}}
-function speak(txt){try{if(!window.speechSynthesis)return;const u=new SpeechSynthesisUtterance(txt);u.lang='en-US';u.volume=1;u.rate=.95;u.pitch=1;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
+let _voices=[];
+function loadVoices(){try{_voices=(window.speechSynthesis&&speechSynthesis.getVoices())||[];}catch(e){}}
+if(window.speechSynthesis){loadVoices();try{speechSynthesis.onvoiceschanged=loadVoices;}catch(e){}}
+function pickFemaleVoice(){
+  if(!_voices.length)loadVoices();
+  const en=_voices.filter(v=>/^en/i.test(v.lang));
+  const pref=['samantha','google us english','zira','karen','moira','tessa','victoria','fiona','serena','aria','jenny','michelle','female'];
+  for(const name of pref){const v=en.find(v=>v.name.toLowerCase().includes(name));if(v)return v;}
+  return en[0]||_voices[0]||null;
+}
+function speak(txt){try{if(!window.speechSynthesis)return;const u=new SpeechSynthesisUtterance(txt);u.lang='en-US';const v=pickFemaleVoice();if(v)u.voice=v;u.volume=.55;u.rate=.9;u.pitch=1.15;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
 function playPhase(p){
-  if(p==='m1start'){tones([[520,0],[680,.18]],.55);speak('Map one start');}
-  else if(p==='m1end'){tones([[880,0],[660,.2],[880,.4],[990,.6]],1.0);speak('Map one end');}
-  else if(p==='m2end'){tones([[760,0],[560,.2],[440,.4]],.8);speak('Map two end');}
+  if(p==='m1start'){tones([[520,0],[680,.18]],.26);speak('Map one start');}
+  else if(p==='m1end'){tones([[820,0],[640,.2],[820,.4]],.5);speak('Map one end');}
+  else if(p==='m2end'){tones([[700,0],[520,.2],[420,.4]],.36);speak('Map two end');}
 }
 let playedSounds=[], soundsSeeded=false;
 function processSounds(arr){
