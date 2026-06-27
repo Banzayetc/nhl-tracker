@@ -700,18 +700,21 @@ def _wx_price(m):
     except Exception:
         return None
 
-def _wx_signal(h):
+def _wx_signal(h, p, m):
+    # фільтр edge (бектест 150 подій): брати лише СЕРЕДНЬОГО фаворита
+    # ціна 30–40¢ та відрив від 2-го 5–15¢ → ROI ~+37%. Краї пропускати.
+    in_zone = (0.30 <= p < 0.40) and (0.05 <= m < 0.15)
     if h is None:
-        return ("—", "#555")
+        return ("—", "#555", in_zone)
     if h > 36:
-        return ("⏳ рано", "#666")
-    if h >= 14:
-        return ("🟢 ВХІД (−24г)", "#1D9E75")
-    if h >= 5:
-        return ("🟡 пізнувато", "#D9A441")
-    if h >= 0:
-        return ("🔴 пізно", "#E24B4A")
-    return ("—", "#555")
+        return ("⏳ рано", "#666", in_zone)
+    if h < 5:
+        return ("🔴 пізно", "#E24B4A", in_zone)
+    if in_zone:
+        if h >= 14:
+            return ("🟢 ВХІД (топ-зона)", "#1D9E75", in_zone)
+        return ("🟡 пізнувато (зона ✓)", "#D9A441", in_zone)
+    return ("⚪ пропустити (фав поза зоною)", "#5a6472", in_zone)
 
 def scan_weather():
     import time as _t
@@ -745,16 +748,18 @@ def scan_weather():
             continue
         buckets.sort(key=lambda b: -b["p"])
         fav = buckets[0]
-        shoulders = [b for b in buckets[1:] if 0.10 <= b["p"] < 0.30]
+        second = buckets[1]["p"] if len(buckets) > 1 else 0.0
+        margin = fav["p"] - second
         h = round((end_ts - now) / 3600, 1) if end_ts else None
-        sig, col = _wx_signal(h)
+        sig, col, in_zone = _wx_signal(h, fav["p"], margin)
         out.append({
             "city": mm.group(1).strip(),
             "date": mm.group(2),
             "hours": h,
             "fav_lab": fav["lab"],
             "fav_px": round(fav["p"] * 100, 1),
-            "shoulders": [{"lab": b["lab"], "px": round(b["p"] * 100, 1)} for b in shoulders],
+            "margin": round(margin * 100, 1),
+            "in_zone": in_zone,
             "signal": sig,
             "sig_color": col,
             "url": "https://polymarket.com/event/" + (e.get("slug", "") or ""),
@@ -763,8 +768,9 @@ def scan_weather():
     def _sk(x):
         h = x["hours"]
         if h is None:
-            return (9, 999)
-        return (0 if 14 <= h <= 36 else 1, abs(h - 24))
+            return (2, 9, 999)
+        in_win = 0 if 14 <= h <= 36 else 1
+        return (0 if x["in_zone"] else 1, in_win, abs(h - 24))
     out.sort(key=_sk)
     return {"events": out}
 
@@ -862,8 +868,9 @@ button:active{opacity:.7}
 .wxfav .fl{font-size:9px;color:#7FE3C2;text-transform:uppercase;letter-spacing:.07em}
 .wxfav .fb{font-size:16px;font-weight:700;color:#B8F0DD}
 .wxfav .fp{margin-left:auto;font-size:14px;font-weight:700;color:#7FDDBB;font-variant-numeric:tabular-nums}
-.wxsh{font-size:11px;color:#aaa;background:#1c1416;border:1px solid #5a303088;border-radius:7px;padding:6px 10px;margin-bottom:7px;line-height:1.5}
-.wxsh b{color:#ff9a9a}
+.wxzone{font-size:11px;border-radius:7px;padding:6px 10px;margin-bottom:7px;line-height:1.4}
+.wxzone.ok{color:#9be8c6;background:#0d2a1e;border:1px solid #1D9E7566}
+.wxzone.no{color:#8893a0;background:#181a22;border:1px solid #2a2d3a}
 .wxlink{display:block;text-align:center;background:#13212e;color:#5BA3E0;border:1px solid #2a4a63;border-radius:6px;padding:6px;font-size:11px;text-decoration:none;font-weight:500}
 .wxlink:active{opacity:.7}
 .wxempty{font-size:12px;color:#444;font-style:italic}
@@ -910,9 +917,9 @@ button:active{opacity:.7}
 <div class="card" style="border-color:#2a4a63;background:#10202c">
 <h2 style="color:#5BA3E0">🌡 Погодний алерт · дневные температуры</h2>
 <div style="font-size:11px;color:#9fb6c8;line-height:1.5">
-Стратегія (виміряно на 150 подіях): за <b>~24г до кінця ринку</b> купувати <b>фаворита</b>
-(бакет з макс. ціною). Вхід ~40¢ → реально виграє <b>48.6%</b> · перекіс <b>+8.5пп</b> · t=2.10 · ROI ~<b>+21%</b> валових.
-Плечі <b>10–30¢</b> переоцінені → їх фейдити. Прогноз погоди НЕ допомагає (basis risk 80%).
+Стратегія (виміряно на 150 подіях): за <b>~24г до кінця</b> купувати <b>фаворита</b> і тримати до резолюції.
+<b>Фільтр edge:</b> брати лише <b>середнього</b> фаворита — ціна <b>30–40¢</b> та відрив від 2-го <b>5–15¢</b> (ROI ~<b>+37%</b> на бектесті).
+Надто впевнених (>60¢) і надто непевних (<30¢) — пропускати. 🟢 = вхід, ⚪ = пропустити.
 </div>
 </div>
 <div class="btns">
@@ -1104,11 +1111,11 @@ function renderWx(evs){
   if(!evs.length){box.innerHTML='<span class="wxempty">Немає відкритих погодних ринків</span>';return}
   box.innerHTML=evs.map(e=>{
     const hrs = e.hours==null?'—':(e.hours<0?'завершено':e.hours+'г');
-    const sh = e.shoulders && e.shoulders.length
-      ? `<div class="wxsh">🔻 Фейдити плечі: ${e.shoulders.map(s=>`<b>${escapeHtml(s.lab)}</b> ${s.px}¢`).join(' · ')}</div>`
-      : '';
+    const zone = e.in_zone
+      ? `<div class="wxzone ok">✓ зона edge: фаворит ${e.fav_px}¢ · відрив ${e.margin}¢</div>`
+      : `<div class="wxzone no">✗ поза зоною: фав ${e.fav_px}¢ · відрив ${e.margin}¢ — треба 30–40¢ та 5–15¢</div>`;
     const link = e.url ? `<a class="wxlink" href="${e.url}" target="_blank">↗ Відкрити на Polymarket</a>` : '';
-    return `<div class="wxrow">
+    return `<div class="wxrow"${e.in_zone?' style="border-color:#1D9E7566"':''}>
       <div class="wxhead">
         <span class="wxcity">${escapeHtml(e.city)}</span>
         <span class="wxdate">${escapeHtml(e.date)}</span>
@@ -1119,7 +1126,7 @@ function renderWx(evs){
         <div><div class="fl">Купити фаворита</div><div class="fb">${escapeHtml(e.fav_lab)}</div></div>
         <span class="fp">${e.fav_px}¢</span>
       </div>
-      ${sh}${link}
+      ${zone}${link}
     </div>`;
   }).join('');
 }
