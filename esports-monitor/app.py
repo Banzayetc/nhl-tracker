@@ -54,6 +54,8 @@ STATE = {
     "alerted": set(),
     "vol_cache": {},         # match_id -> (vol, title, slug, game_key)
     "upcoming": [],          # предстоящие матчи на 21ч вперёд
+    "diag": [],              # ВРЕМЕННО: журнал переходов фаз для проверки источника
+    "diag_seen": {},         # match_id -> последняя сигнатура (ps,s1,s2,cov,lu)
 }
 LOCK = threading.Lock()
 
@@ -340,6 +342,32 @@ def monitor_loop():
                 gnum = int(lu.get("game_number") or 0)
                 gended = bool(lu.get("game_ended"))
 
+                # ── ВРЕМЕННА ДІАГНОСТИКА джерела (старт/кінець карти) ──
+                # Пишемо запис ЛИШЕ коли щось змінилось (parsed_status / рахунок / покриття / live_updates).
+                try:
+                    _ps = m.get("parsed_status")
+                    _cov = bool(m.get("live_coverage"))
+                    _lup = bool(lu)
+                    _sig = (_ps, score[0], score[1], _cov, _lup)
+                    with LOCK:
+                        _prev = STATE["diag_seen"].get(mid)
+                    if _sig != _prev:
+                        with LOCK:
+                            STATE["diag_seen"][mid] = _sig
+                            STATE["diag"].append({
+                                "ts": now_ts(), "slug": m.get("slug", ""),
+                                "game": disc["label"], "tier": m.get("tier"),
+                                "ps": _ps, "sc": f"{score[0]}:{score[1]}",
+                                "cov": _cov, "lu": _lup,
+                                "gn": (lu.get("game_number") if _lup else None),
+                                "ge": (lu.get("game_ended") if _lup else None),
+                                "maps": m.get("maps_score"),
+                            })
+                            STATE["diag"] = STATE["diag"][-400:]
+                except Exception:
+                    pass
+                # ── /діагностика ──
+
                 # В список показываем только матчи где вход ещё возможен:
                 # 0:0 (ждём К1) и 1:0/0:1 (момент входа). 1:1 и решённые серии скрываем.
                 stotal = score[0] + score[1]
@@ -611,6 +639,10 @@ class Handler(BaseHTTPRequestHandler):
                 payload = scan_weather()
             except Exception as e:
                 payload = {"events": [], "error": str(e)}
+            self._send(200, "application/json", json.dumps(payload, ensure_ascii=False))
+        elif self.path.startswith("/diag"):
+            with LOCK:
+                payload = {"diag": STATE["diag"], "count": len(STATE["diag"])}
             self._send(200, "application/json", json.dumps(payload, ensure_ascii=False))
         elif self.path.startswith("/state"):
             with LOCK:
