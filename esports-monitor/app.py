@@ -873,6 +873,15 @@ button:active{opacity:.7}
 .start{background:#1D9E75;color:#fff}
 .stop{background:#3d1a1a;color:#ff6b6b;border:1px solid #5a2020}
 .test{background:#1a1d27;color:#888;border:1px solid #2a2d3a;flex:.5}
+#voicebox{background:#0e1016;border:1px solid #222633;border-radius:9px;padding:9px;margin-bottom:10px;max-height:300px;overflow:auto}
+.vlh{font-size:11px;color:#7FDDBB;font-weight:700;margin-bottom:6px}
+.vpitch{font-size:11px;color:#9fb6c8;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.vpitch input{flex:1}
+.vrow{display:flex;align-items:center;gap:6px;padding:4px 5px;border-radius:6px;font-size:12px;color:#cfd8e3}
+.vrow.sel{background:#0d2a1e;border:1px solid #1D9E7566}
+.vrow .vn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vrow .vn i{color:#667;font-style:normal;font-size:10px}
+.vrow button{background:#1a1d27;color:#9fb6c8;border:1px solid #2a2d3a;border-radius:5px;padding:2px 8px;cursor:pointer;font-size:11px}
 .live h2{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:#555;margin-bottom:8px}
 .pill{display:inline-flex;align-items:center;gap:6px;background:#1a1d27;border:1px solid #2a2d3a;border-radius:20px;padding:4px 10px;font-size:12px;color:#888;margin:0 4px 4px 0}
 .pill .g{font-size:10px;color:#555;text-transform:uppercase}
@@ -1001,7 +1010,9 @@ button:active{opacity:.7}
 <button class="start" onclick="start()">▶ Запустить</button>
 <button class="stop" onclick="stop()">⏹ Стоп</button>
 <button class="test" onclick="test()">🔔</button>
+<button class="test" onclick="toggleVoices()" title="Вибір голосу">🎙</button>
 </div>
+<div id="voicebox" style="display:none"></div>
 
 <div class="logw"><div class="logh">Лог</div><div class="logb" id="log"></div></div>
 
@@ -1042,7 +1053,36 @@ function pickFemaleVoice(){
   for(const name of pref){const v=en.find(v=>v.name.toLowerCase().includes(name));if(v)return v;}
   return en[0]||_voices[0]||null;
 }
-function speak(txt){try{if(!window.speechSynthesis)return;const u=new SpeechSynthesisUtterance(txt);u.lang='en-US';const v=pickFemaleVoice();if(v)u.voice=v;u.volume=.55;u.rate=.9;u.pitch=1.15;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
+function chosenVoice(){
+  let pref=null; try{pref=localStorage.getItem('voicePref');}catch(e){}
+  if(pref){const v=_voices.find(v=>v.name===pref); if(v)return v;}
+  return pickFemaleVoice();
+}
+function curPitch(){let p=1.15;try{const s=localStorage.getItem('voicePitch');if(s)p=parseFloat(s);}catch(e){}return p;}
+function speak(txt){try{if(!window.speechSynthesis)return;const u=new SpeechSynthesisUtterance(txt);u.lang='en-US';const v=chosenVoice();if(v){u.voice=v;u.lang=v.lang;}u.volume=.55;u.rate=.9;u.pitch=curPitch();speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
+function toggleVoices(){const b=document.getElementById('voicebox');if(!b)return;if(b.style.display==='none'){b.style.display='block';renderVoices();}else{b.style.display='none';}}
+function renderVoices(){
+  loadVoices();
+  const b=document.getElementById('voicebox'); if(!b)return;
+  let pref=''; try{pref=localStorage.getItem('voicePref')||'';}catch(e){}
+  const pitch=curPitch();
+  const en=_voices.filter(v=>/^en/i.test(v.lang));
+  const list=en.length?en:_voices;
+  let html='<div class="vlh">Голоси браузера ('+list.length+') — ▶ послухати, ✓ вибрати</div>';
+  html+='<div class="vpitch">🎈 мультяшність: <input type="range" min="1" max="2" step="0.05" value="'+pitch+'" oninput="document.getElementById(\'vpv\').textContent=(+this.value).toFixed(2)" onchange="setPitch(this.value)"> <span id="vpv">'+pitch.toFixed(2)+'</span></div>';
+  if(!list.length){html+='<div style="font-size:11px;color:#888">Голоси ще не завантажились — закрий і відкрий ще раз.</div>';}
+  list.forEach(v=>{
+    const nm=v.name.replace(/'/g,"\\'");
+    const sel=v.name===pref?' sel':'';
+    html+='<div class="vrow'+sel+'"><span class="vn">'+escapeHtml(v.name)+' <i>'+escapeHtml(v.lang)+'</i></span>'
+        +'<button onclick="previewVoice(\''+nm+'\')">▶</button>'
+        +'<button onclick="setVoice(\''+nm+'\')">'+(v.name===pref?'✓':'вибрати')+'</button></div>';
+  });
+  b.innerHTML=html;
+}
+function setPitch(val){try{localStorage.setItem('voicePitch',val);}catch(e){}previewVoice(null);}
+function setVoice(name){try{localStorage.setItem('voicePref',name);}catch(e){}renderVoices();previewVoice(name);}
+function previewVoice(name){try{if(!window.speechSynthesis)return;const u=new SpeechSynthesisUtterance('Map one end');const v=name?_voices.find(x=>x.name===name):chosenVoice();if(v){u.voice=v;u.lang=v.lang;}u.volume=.6;u.rate=.9;u.pitch=curPitch();speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
 function playPhase(p){
   if(p==='m1start'){tones([[520,0],[680,.18]],.26);speak('Map one start');}
   else if(p==='m1end'){tones([[820,0],[640,.2],[820,.4]],.5);speak('Map one end');}
