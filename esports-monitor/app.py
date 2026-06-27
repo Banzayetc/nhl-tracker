@@ -909,6 +909,10 @@ button:active{opacity:.7}
 .wxzone{font-size:11px;border-radius:7px;padding:6px 10px;margin-bottom:7px;line-height:1.4}
 .wxzone.ok{color:#9be8c6;background:#0d2a1e;border:1px solid #1D9E7566}
 .wxzone.no{color:#8893a0;background:#181a22;border:1px solid #2a2d3a}
+.wxbuy{display:flex;align-items:center;gap:7px;font-size:12px;color:#9fb6c8;margin-top:8px;cursor:pointer;user-select:none}
+.wxbuy input{width:16px;height:16px;cursor:pointer;accent-color:#1D9E75}
+.wxbts{font-size:10px;color:#7FDDBB;margin-top:3px;min-height:11px}
+.wxrow.bought{opacity:.5}
 .wxlink{display:block;text-align:center;background:#13212e;color:#5BA3E0;border:1px solid #2a4a63;border-radius:6px;padding:6px;font-size:11px;text-decoration:none;font-weight:500}
 .wxlink:active{opacity:.7}
 .wxempty{font-size:12px;color:#444;font-style:italic}
@@ -1150,11 +1154,12 @@ function renderWx(evs){
   box.innerHTML=evs.map(e=>{
     const hrs = e.hours==null?'—':(e.hours<0?'завершено':e.hours+'г');
     const volk = e.vol>=1000 ? (e.vol/1000).toFixed(0)+'k' : e.vol;
+    const wxid = e.url || (e.city+'|'+e.date+'|'+e.fav_lab);
     const sig = e.in_zone
       ? `<div class="wxzone ok">✓ дешевий фаворит ${e.fav_px}¢ + тонкий ринок ($${volk}) — обидва сигнали</div>`
       : `<div class="wxzone no">фаворит ${e.fav_px}¢ · обсяг $${volk} ${e.low_vol?'(тонкий ✓)':'(товстий)'} ${e.fav_px<50?'· ціна ✓':'· фав >50¢'}</div>`;
     const link = e.url ? `<a class="wxlink" href="${e.url}" target="_blank">↗ Відкрити на Polymarket</a>` : '';
-    return `<div class="wxrow"${e.in_zone?' style="border-color:#1D9E7566"':''}>
+    return `<div class="wxrow" data-wxid="${escapeHtml(wxid)}"${e.in_zone?' style="border-color:#1D9E7566"':''}>
       <div class="wxhead">
         <span class="wxcity">${escapeHtml(e.city)}</span>
         <span class="wxdate">${escapeHtml(e.date)}</span>
@@ -1167,8 +1172,34 @@ function renderWx(evs){
         <span class="fp">${e.fav_px}¢</span>
       </div>
       ${sig}${link}
+      <label class="wxbuy"><input type="checkbox" class="wxbuychk"> Куплено</label>
+      <div class="wxbts"></div>
     </div>`;
   }).join('');
+  wxRestoreBought();
+}
+
+function wxRestoreBought(){
+  const box=document.getElementById('wxlist');
+  box.querySelectorAll('.wxrow').forEach(row=>{
+    const key='wxbought:'+row.getAttribute('data-wxid');
+    const chk=row.querySelector('.wxbuychk');
+    const bts=row.querySelector('.wxbts');
+    let ts=null; try{ts=localStorage.getItem(key);}catch(_){}
+    if(ts){ chk.checked=true; row.classList.add('bought'); bts.textContent='✅ куплено '+ts; box.appendChild(row); }
+    chk.onchange=function(){
+      try{
+        if(chk.checked){
+          const n=new Date();
+          const p=x=>('0'+x).slice(-2);
+          const s=p(n.getDate())+'.'+p(n.getMonth()+1)+' '+p(n.getHours())+':'+p(n.getMinutes());
+          localStorage.setItem(key,s); row.classList.add('bought'); bts.textContent='✅ куплено '+s; box.appendChild(row);
+        }else{
+          localStorage.removeItem(key); row.classList.remove('bought'); bts.textContent='';
+        }
+      }catch(_){}
+    };
+  });
 }
 function wxAuto(){
   const b=document.getElementById('wxautobtn');
