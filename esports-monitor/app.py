@@ -683,6 +683,18 @@ class Handler(BaseHTTPRequestHandler):
 # (бакет с макс. ценой) — вход ~40¢, реально выигрывает 48.6%, перекос +8.5пп, t=2.10,
 # ROI +21% валовых. Плечи 10-30¢ переоценены → их фейдить. Прогноз НЕ помогает (basis risk).
 WEATHER_TAG = 84
+_WX_EU = {"london","paris","amsterdam","munich","madrid","moscow","helsinki","istanbul","berlin","rome","warsaw","kyiv","kiev","vienna","dublin","lisbon","oslo","stockholm","zurich","barcelona","milan","prague","athens","budapest"}
+_WX_AS = {"beijing","shanghai","tokyo","seoul","hong kong","shenzhen","guangzhou","mumbai","lucknow","delhi","bangkok","manila","jakarta","singapore","osaka","taipei","hanoi","dhaka","karachi","chengdu","wuhan","busan","kolkata"}
+
+def _wx_region(city, is_f):
+    if is_f:
+        return "US"
+    c = city.lower()
+    if c in _WX_EU:
+        return "Europe"
+    if c in _WX_AS:
+        return "Asia"
+    return "Other"
 
 def _wx_price(m):
     for k in ("lastTradePrice", "bestAsk"):
@@ -700,21 +712,24 @@ def _wx_price(m):
     except Exception:
         return None
 
-def _wx_signal(h, p, m):
-    # фільтр edge (бектест 150 подій): брати лише СЕРЕДНЬОГО фаворита
-    # ціна 30–40¢ та відрив від 2-го 5–15¢ → ROI ~+37%. Краї пропускати.
-    in_zone = (0.30 <= p < 0.40) and (0.05 <= m < 0.15)
+def _wx_signal(h, p, m, is_low):
+    # фільтр edge (бектест 221 подія): СЕРЕДНІЙ фаворит 30–40¢, відрив 5–15¢,
+    # і ТІЛЬКИ Highest-ринки (ROI +27%, t=3.25). Lowest — поза стратегією.
+    pm_ok = (0.30 <= p < 0.40) and (0.05 <= m < 0.15)
+    in_zone = pm_ok and not is_low
     if h is None:
         return ("—", "#555", in_zone)
+    if not pm_ok:
+        return ("⚪ пропустити (фав поза зоною)", "#5a6472", in_zone)
+    if is_low:
+        return ("🔵 Lowest — поза стратегією", "#4a7a9c", in_zone)
     if h > 36:
-        return ("⏳ рано", "#666", in_zone)
+        return ("⏳ рано (зона ✓)", "#666", in_zone)
     if h < 5:
         return ("🔴 пізно", "#E24B4A", in_zone)
-    if in_zone:
-        if h >= 14:
-            return ("🟢 ВХІД (топ-зона)", "#1D9E75", in_zone)
-        return ("🟡 пізнувато (зона ✓)", "#D9A441", in_zone)
-    return ("⚪ пропустити (фав поза зоною)", "#5a6472", in_zone)
+    if h >= 14:
+        return ("🟢 ВХІД (топ-зона)", "#1D9E75", in_zone)
+    return ("🟡 пізнувато (зона ✓)", "#D9A441", in_zone)
 
 def scan_weather():
     import time as _t
@@ -750,16 +765,21 @@ def scan_weather():
         fav = buckets[0]
         second = buckets[1]["p"] if len(buckets) > 1 else 0.0
         margin = fav["p"] - second
+        is_low = "lowest" in title.lower()
+        is_f = "°F" in fav["lab"] or fav["lab"].endswith("F")
+        city = mm.group(1).strip()
         h = round((end_ts - now) / 3600, 1) if end_ts else None
-        sig, col, in_zone = _wx_signal(h, fav["p"], margin)
+        sig, col, in_zone = _wx_signal(h, fav["p"], margin, is_low)
         out.append({
-            "city": mm.group(1).strip(),
+            "city": city,
             "date": mm.group(2),
             "hours": h,
             "fav_lab": fav["lab"],
             "fav_px": round(fav["p"] * 100, 1),
             "margin": round(margin * 100, 1),
             "in_zone": in_zone,
+            "is_low": is_low,
+            "region": _wx_region(city, is_f),
             "signal": sig,
             "sig_color": col,
             "url": "https://polymarket.com/event/" + (e.get("slug", "") or ""),
@@ -862,6 +882,7 @@ button:active{opacity:.7}
 .wxhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
 .wxcity{font-size:14px;font-weight:600;color:#fff}
 .wxdate{font-size:11px;color:#666}
+.wxreg{font-size:10px;color:#7a8694;background:#161922;border:1px solid #2a2d3a;padding:2px 7px;border-radius:5px}
 .wxsig{font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-left:auto}
 .wxhrs{font-size:11px;color:#888;background:#12151f;border:1px solid #2a2d3a;padding:3px 8px;border-radius:6px}
 .wxfav{background:#0d2a1e;border:1px solid #1D9E7588;border-radius:8px;padding:7px 11px;margin-bottom:7px;display:flex;align-items:center;gap:10px}
@@ -919,7 +940,7 @@ button:active{opacity:.7}
 <div style="font-size:11px;color:#9fb6c8;line-height:1.5">
 Стратегія (виміряно на 150 подіях): за <b>~24г до кінця</b> купувати <b>фаворита</b> і тримати до резолюції.
 <b>Фільтр edge:</b> брати лише <b>середнього</b> фаворита — ціна <b>30–40¢</b> та відрив від 2-го <b>5–15¢</b> (ROI ~<b>+37%</b> на бектесті).
-Надто впевнених (>60¢) і надто непевних (<30¢) — пропускати. 🟢 = вхід, ⚪ = пропустити.
+Надто впевнених (>60¢) і надто непевних (<30¢) — пропускати. Тільки <b>Highest</b> ринки (Lowest 🔵 — поза стратегією). Регіон — інфо (Asia сильніше). 🟢 = вхід, ⚪/🔵 = пропустити.
 </div>
 </div>
 <div class="btns">
@@ -1119,6 +1140,7 @@ function renderWx(evs){
       <div class="wxhead">
         <span class="wxcity">${escapeHtml(e.city)}</span>
         <span class="wxdate">${escapeHtml(e.date)}</span>
+        <span class="wxreg">${escapeHtml(e.region)}${e.is_low?' · Lowest':' · Highest'}</span>
         <span class="wxhrs">⏳ ${hrs} до кінця</span>
         <span class="wxsig" style="color:${e.sig_color};background:${e.sig_color}1a;border:1px solid ${e.sig_color}55">${escapeHtml(e.signal)}</span>
       </div>
