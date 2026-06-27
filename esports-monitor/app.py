@@ -712,24 +712,30 @@ def _wx_price(m):
     except Exception:
         return None
 
-def _wx_signal(h, p, m, is_low):
-    # фільтр edge (бектест 221 подія): СЕРЕДНІЙ фаворит 30–40¢, відрив 5–15¢,
-    # і ТІЛЬКИ Highest-ринки (ROI +27%, t=3.25). Lowest — поза стратегією.
-    pm_ok = (0.30 <= p < 0.40) and (0.05 <= m < 0.15)
-    in_zone = pm_ok and not is_low
+def _wx_signal(h, p, low_vol):
+    # Два підтверджених сигнали (бектест 1629 подій, OOS +28%, t>5):
+    #   ЦІНА фаворита < 50¢ (чим дешевше тим краще: <30¢ найсильніше)
+    #   НИЗЬКИЙ обсяг ринку (нижня третина) — тонкі ринки недооцінюють фаворита
+    cheap = p < 0.50
+    good = cheap and low_vol
     if h is None:
-        return ("—", "#555", in_zone)
-    if not pm_ok:
-        return ("⚪ пропустити (фав поза зоною)", "#5a6472", in_zone)
-    if is_low:
-        return ("🔵 Lowest — поза стратегією", "#4a7a9c", in_zone)
+        return ("—", "#555", good)
     if h > 36:
-        return ("⏳ рано (зона ✓)", "#666", in_zone)
+        return ("⏳ рано", "#666", good)
     if h < 5:
-        return ("🔴 пізно", "#E24B4A", in_zone)
-    if h >= 14:
-        return ("🟢 ВХІД (топ-зона)", "#1D9E75", in_zone)
-    return ("🟡 пізнувато (зона ✓)", "#D9A441", in_zone)
+        return ("🔴 пізно", "#E24B4A", good)
+    if good:
+        if h >= 14:
+            tag = "🟢🟢 ВХІД+ (дешево<30¢)" if p < 0.30 else "🟢 ВХІД (дешево+тонко)"
+            return (tag, "#1D9E75", good)
+        return ("🟡 пізнувато (сигнал ✓)", "#D9A441", good)
+    if not cheap and not low_vol:
+        why = "фав >50¢ + товстий ринок"
+    elif not cheap:
+        why = "фав >50¢"
+    else:
+        why = "ринок не тонкий"
+    return ("⚪ пропустити (%s)" % why, "#5a6472", good)
 
 def scan_weather():
     import time as _t
@@ -737,7 +743,7 @@ def scan_weather():
            "&closed=false&limit=100&order=volume&ascending=false" % WEATHER_TAG)
     ev = http_get_json(url) or []
     now = _t.time()
-    out = []
+    raw = []
     for e in ev:
         title = e.get("title", "")
         mm = re.search(r"temperature in (.+?) on (\w+ \d+)", title, re.I)
@@ -763,26 +769,37 @@ def scan_weather():
             continue
         buckets.sort(key=lambda b: -b["p"])
         fav = buckets[0]
-        second = buckets[1]["p"] if len(buckets) > 1 else 0.0
-        margin = fav["p"] - second
+        # обсяг події (поточний; для відносного фільтра)
+        try:
+            vol = float(e.get("volume") or 0)
+        except Exception:
+            vol = 0.0
+        if vol <= 0:
+            vol = sum(float(m.get("volumeNum") or 0) for m in mks)
         is_low = "lowest" in title.lower()
         is_f = "°F" in fav["lab"] or fav["lab"].endswith("F")
         city = mm.group(1).strip()
         h = round((end_ts - now) / 3600, 1) if end_ts else None
-        sig, col, in_zone = _wx_signal(h, fav["p"], margin, is_low)
+        raw.append({"city": city, "date": mm.group(2), "hours": h,
+                    "fav_lab": fav["lab"], "fav_p": fav["p"],
+                    "fav_px": round(fav["p"] * 100, 1), "vol": vol,
+                    "is_low": is_low, "region": _wx_region(city, is_f),
+                    "url": "https://polymarket.com/event/" + (e.get("slug", "") or "")})
+
+    # поріг "низького обсягу" = нижня третина серед поточних подій (самокалібрування)
+    vols = sorted(r["vol"] for r in raw if r["vol"] > 0)
+    vol_thr = vols[len(vols) // 3] if len(vols) >= 3 else 0.0
+
+    out = []
+    for r in raw:
+        low_vol = r["vol"] < vol_thr
+        sig, col, good = _wx_signal(r["hours"], r["fav_p"], low_vol)
         out.append({
-            "city": city,
-            "date": mm.group(2),
-            "hours": h,
-            "fav_lab": fav["lab"],
-            "fav_px": round(fav["p"] * 100, 1),
-            "margin": round(margin * 100, 1),
-            "in_zone": in_zone,
-            "is_low": is_low,
-            "region": _wx_region(city, is_f),
-            "signal": sig,
-            "sig_color": col,
-            "url": "https://polymarket.com/event/" + (e.get("slug", "") or ""),
+            "city": r["city"], "date": r["date"], "hours": r["hours"],
+            "fav_lab": r["fav_lab"], "fav_px": r["fav_px"],
+            "vol": round(r["vol"]), "low_vol": low_vol,
+            "in_zone": good, "is_low": r["is_low"], "region": r["region"],
+            "signal": sig, "sig_color": col, "url": r["url"],
         })
 
     def _sk(x):
@@ -792,7 +809,7 @@ def scan_weather():
         in_win = 0 if 14 <= h <= 36 else 1
         return (0 if x["in_zone"] else 1, in_win, abs(h - 24))
     out.sort(key=_sk)
-    return {"events": out}
+    return {"events": out, "vol_thr": round(vol_thr)}
 
 PAGE = r"""<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -938,9 +955,9 @@ button:active{opacity:.7}
 <div class="card" style="border-color:#2a4a63;background:#10202c">
 <h2 style="color:#5BA3E0">🌡 Погодний алерт · дневные температуры</h2>
 <div style="font-size:11px;color:#9fb6c8;line-height:1.5">
-Стратегія (виміряно на 150 подіях): за <b>~24г до кінця</b> купувати <b>фаворита</b> і тримати до резолюції.
-<b>Фільтр edge:</b> брати лише <b>середнього</b> фаворита — ціна <b>30–40¢</b> та відрив від 2-го <b>5–15¢</b> (ROI ~<b>+37%</b> на бектесті).
-Надто впевнених (>60¢) і надто непевних (<30¢) — пропускати. Тільки <b>Highest</b> ринки (Lowest 🔵 — поза стратегією). Регіон — інфо (Asia сильніше). 🟢 = вхід, ⚪/🔵 = пропустити.
+Стратегія (бектест <b>1629 подій</b>, OOS-перевірка +28% t=4.8): за <b>~24г до кінця</b> купувати <b>фаворита</b> і тримати до резолюції.
+<b>Два сигнали:</b> ціна фаворита <b>&lt;50¢</b> (чим дешевше тим краще, &lt;30¢ найсильніше) <b>І</b> <b>низький обсяг</b> ринку (нижня третина — тонкі ринки недооцінюють фаворита, +24% vs ~0 на товстих).
+Регіон / Highest-Lowest / відрив — <b>шум</b> (не фільтруємо). 🟢 = обидва сигнали збіглися, ⚪ = пропустити.
 </div>
 </div>
 <div class="btns">
@@ -1132,9 +1149,10 @@ function renderWx(evs){
   if(!evs.length){box.innerHTML='<span class="wxempty">Немає відкритих погодних ринків</span>';return}
   box.innerHTML=evs.map(e=>{
     const hrs = e.hours==null?'—':(e.hours<0?'завершено':e.hours+'г');
-    const zone = e.in_zone
-      ? `<div class="wxzone ok">✓ зона edge: фаворит ${e.fav_px}¢ · відрив ${e.margin}¢</div>`
-      : `<div class="wxzone no">✗ поза зоною: фав ${e.fav_px}¢ · відрив ${e.margin}¢ — треба 30–40¢ та 5–15¢</div>`;
+    const volk = e.vol>=1000 ? (e.vol/1000).toFixed(0)+'k' : e.vol;
+    const sig = e.in_zone
+      ? `<div class="wxzone ok">✓ дешевий фаворит ${e.fav_px}¢ + тонкий ринок ($${volk}) — обидва сигнали</div>`
+      : `<div class="wxzone no">фаворит ${e.fav_px}¢ · обсяг $${volk} ${e.low_vol?'(тонкий ✓)':'(товстий)'} ${e.fav_px<50?'· ціна ✓':'· фав >50¢'}</div>`;
     const link = e.url ? `<a class="wxlink" href="${e.url}" target="_blank">↗ Відкрити на Polymarket</a>` : '';
     return `<div class="wxrow"${e.in_zone?' style="border-color:#1D9E7566"':''}>
       <div class="wxhead">
@@ -1148,7 +1166,7 @@ function renderWx(evs){
         <div><div class="fl">Купити фаворита</div><div class="fb">${escapeHtml(e.fav_lab)}</div></div>
         <span class="fp">${e.fav_px}¢</span>
       </div>
-      ${zone}${link}
+      ${sig}${link}
     </div>`;
   }).join('');
 }
