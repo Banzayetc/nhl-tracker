@@ -912,7 +912,24 @@ button:active{opacity:.7}
 .wxbuy{display:flex;align-items:center;gap:7px;font-size:12px;color:#9fb6c8;margin-top:8px;cursor:pointer;user-select:none}
 .wxbuy input{width:16px;height:16px;cursor:pointer;accent-color:#1D9E75}
 .wxbts{font-size:10px;color:#7FDDBB;margin-top:3px;min-height:11px}
-.wxrow.bought{opacity:.5}
+.wxrow.bought{opacity:.6}
+.wxcols{display:flex;gap:12px;align-items:flex-start}
+.wxmain{flex:1;min-width:0}
+.wxside{width:236px;flex:none;background:#0e1016;border:1px solid #222633;border-radius:10px;padding:8px}
+.wxside-h{font-size:11px;font-weight:700;color:#7FDDBB;text-transform:uppercase;letter-spacing:.06em;padding:2px 4px 8px}
+.wxside .wxempty2{font-size:11px;color:#555;padding:4px}
+/* компактний вид куплених у вузькій колонці */
+.wxside .wxrow{padding:8px 9px;margin-bottom:7px}
+.wxside .wxreg,.wxside .wxhrs,.wxside .wxsig,.wxside .wxzone,.wxside .wxlink{display:none}
+.wxside .wxfav{padding:5px 8px;margin-bottom:6px}
+.wxside .wxfav .fb{font-size:13px}
+.wxside .wxhead{gap:6px}
+.wxbuys{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px}
+.wxside .wxbuys{gap:8px}
+.wxbuy{display:flex;align-items:center;gap:6px;font-size:12px;color:#9fb6c8;cursor:pointer;user-select:none}
+.wxbuy input{width:16px;height:16px;cursor:pointer;accent-color:#1D9E75}
+.wxbuy.lim input{accent-color:#D9A441}
+.wxbts{font-size:10px;color:#7FDDBB;margin-top:4px;min-height:11px}
 .wxlink{display:block;text-align:center;background:#13212e;color:#5BA3E0;border:1px solid #2a4a63;border-radius:6px;padding:6px;font-size:11px;text-decoration:none;font-weight:500}
 .wxlink:active{opacity:.7}
 .wxempty{font-size:12px;color:#444;font-style:italic}
@@ -969,7 +986,10 @@ button:active{opacity:.7}
 <button class="test" onclick="wxAuto()" id="wxautobtn" title="Авто-оновлення">⏱</button>
 </div>
 <div id="wxstatus" style="font-size:11px;color:#555;margin-bottom:10px">—</div>
-<div id="wxlist"></div>
+<div class="wxcols">
+  <div id="wxlist" class="wxmain"></div>
+  <div id="wxbought" class="wxside"><div class="wxside-h">✅ Куплено</div></div>
+</div>
 </div><!-- /tab-weather -->
 
 <script>
@@ -1172,34 +1192,54 @@ function renderWx(evs){
         <span class="fp">${e.fav_px}¢</span>
       </div>
       ${sig}${link}
-      <label class="wxbuy"><input type="checkbox" class="wxbuychk"> Куплено</label>
+      <div class="wxbuys">
+        <label class="wxbuy lim"><input type="checkbox" class="wxlimchk"> Лімітка</label>
+        <label class="wxbuy"><input type="checkbox" class="wxbuychk"> Куплено</label>
+      </div>
       <div class="wxbts"></div>
     </div>`;
   }).join('');
-  wxRestoreBought();
+  wxRestore();
 }
 
-function wxRestoreBought(){
+function wxRestore(){
   const box=document.getElementById('wxlist');
+  const side=document.getElementById('wxbought');
+  side.innerHTML='<div class="wxside-h">✅ Куплено</div>';
   box.querySelectorAll('.wxrow').forEach(row=>{
-    const key='wxbought:'+row.getAttribute('data-wxid');
-    const chk=row.querySelector('.wxbuychk');
+    const id=row.getAttribute('data-wxid');
+    const kb='wxbought:'+id, kl='wxlimit:'+id;
+    const chkB=row.querySelector('.wxbuychk');
+    const chkL=row.querySelector('.wxlimchk');
     const bts=row.querySelector('.wxbts');
-    let ts=null; try{ts=localStorage.getItem(key);}catch(_){}
-    if(ts){ chk.checked=true; row.classList.add('bought'); bts.textContent='✅ куплено '+ts; box.appendChild(row); }
-    chk.onchange=function(){
+    let tb=null,tl=null;
+    try{tb=localStorage.getItem(kb);tl=localStorage.getItem(kl);}catch(_){}
+    const stamp=()=>{const n=new Date(),p=x=>('0'+x).slice(-2);
+      return p(n.getDate())+'.'+p(n.getMonth()+1)+' '+p(n.getHours())+':'+p(n.getMinutes());};
+    const paint=()=>{
+      let s='';
+      if(tl) s+='🟡 лімітка '+tl;
+      if(tb) s+=(s?' · ':'')+'✅ куплено '+tb;
+      bts.textContent=s;
+    };
+    if(tl){chkL.checked=true;}
+    if(tb){chkB.checked=true;row.classList.add('bought');side.appendChild(row);}
+    paint();
+    chkL.onchange=function(){
+      try{ if(chkL.checked){tl=stamp();localStorage.setItem(kl,tl);}
+           else{tl=null;localStorage.removeItem(kl);} paint(); }catch(_){}
+    };
+    chkB.onchange=function(){
       try{
-        if(chk.checked){
-          const n=new Date();
-          const p=x=>('0'+x).slice(-2);
-          const s=p(n.getDate())+'.'+p(n.getMonth()+1)+' '+p(n.getHours())+':'+p(n.getMinutes());
-          localStorage.setItem(key,s); row.classList.add('bought'); bts.textContent='✅ куплено '+s; box.appendChild(row);
-        }else{
-          localStorage.removeItem(key); row.classList.remove('bought'); bts.textContent='';
-        }
+        if(chkB.checked){tb=stamp();localStorage.setItem(kb,tb);row.classList.add('bought');side.appendChild(row);}
+        else{tb=null;localStorage.removeItem(kb);row.classList.remove('bought');box.appendChild(row);}
+        paint();
       }catch(_){}
     };
   });
+  if(!side.querySelector('.wxrow'))
+    {if(!side.querySelector('.wxempty2')) side.insertAdjacentHTML('beforeend','<div class="wxempty2">поки порожньо</div>');}
+  else {const e=side.querySelector('.wxempty2'); if(e) e.remove();}
 }
 function wxAuto(){
   const b=document.getElementById('wxautobtn');
