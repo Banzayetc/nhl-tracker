@@ -32,14 +32,14 @@ DISCIPLINES = {
     "dota2":    {"id": 4, "label": "Dota 2",   "pm_tag": "dota-2"},
 }
 
-# Пороги объёма (из бэктеста). CS2 выше т.к. база ликвиднее.
-# CS2: killzone <$40K (обратный паттерн), жир $40-125K, рабочий до $250K
-# Dota2: жир <$25K, рабочий до $50K
+# Пороги объёма: БОЛЬШЕ = ЛУЧШЕ. Ниже kill — «килзон» (мало, не торговать);
+# от kill до green — жёлтый (средний); выше green — зелёный (большой объём).
 VOL_THRESHOLDS = {
-    "cs2":      {"kill": 40_000, "fat": 125_000, "thin": 250_000},
-    "valorant": {"kill": 0,      "fat": 50_000,  "thin": 50_000},
-    "dota2":    {"kill": 0,      "fat": 25_000,  "thin": 50_000},
+    "cs2":      {"kill": 40_000,  "green": 100_000},
+    "valorant": {"kill": 15_000,  "green": 40_000},   # объёмы ниже CS2 — пороги подбери при желании
+    "dota2":    {"kill": 12_000,  "green": 30_000},
 }
+VOL_TTL = 90   # сек: как часто перетягивать объём матча (живое обновление)
 
 # Глобальное состояние (общий доступ из потоков)
 STATE = {
@@ -52,7 +52,7 @@ STATE = {
     "alerts": [],
     "seen": {},              # match_id -> last score
     "alerted": set(),
-    "vol_cache": {},         # match_id -> (vol, title, slug, game_key)
+    "vol_cache": {},         # match_id -> (vol, title, slug, ts) — с TTL
     "upcoming": [],          # предстоящие матчи на 21ч вперёд
     "diag": [],              # ВРЕМЕННО: журнал переходов фаз для проверки источника
     "diag_seen": {},         # match_id -> последняя сигнатура (ps,s1,s2,cov,lu)
@@ -220,102 +220,22 @@ def vol_label(vol, game):
     th = VOL_THRESHOLDS[game]
     if vol is None:
         return "❓ Не найден на Polymarket", "#888888"
-    # CS2: зона killzone <$55K — обратный паттерн, не торговать
-    if game == "cs2" and vol < th["kill"]:
-        return f"⛔ КІЛЗОН  ${vol:,.0f}", "#666666"
-    if vol < th["fat"]:
-        return f"🟢 ЖИР  ${vol:,.0f}", "#1D9E75"
-    # CS2: рабочая зона $125-250K
-    if game == "cs2" and vol < th["thin"]:
-        return f"🟡 ТОНКО  ${vol:,.0f}", "#BA7517"
-    if game != "cs2" and vol < th["thin"]:
-        return f"🟡 ТОНКО  ${vol:,.0f}", "#BA7517"
-    return f"🔴 МИМО  ${vol:,.0f}", "#A32D2D"
+    if vol < th["kill"]:
+        return f"⛔ КІЛЗОН  ${vol:,.0f}", "#666666"       # мало — не торговать
+    if vol < th["green"]:
+        return f"🟡 СРЕДНИЙ  ${vol:,.0f}", "#BA7517"       # средний объём
+    return f"🟢 БОЛЬШОЙ  ${vol:,.0f}", "#1D9E75"           # большой = хорошо
 
 def vol_verdict(vol, game):
-    """Короткая пометка для списка: моментум ЖИР/ТОНКО/МИМО + цвет"""
+    """Короткая пометка для списка: цвет по объёму (больше = лучше)"""
     th = VOL_THRESHOLDS[game]
     if vol is None:
         return "?", "#888888"
-    # CS2: killzone — показываем но серым (не торговать)
-    if game == "cs2" and vol < th["kill"]:
-        return f"⛔ ${vol/1000:.0f}K", "#555555"
-    if vol < th["fat"]:
-        return f"ЖИР ${vol/1000:.0f}K", "#1D9E75"
-    if vol < th["thin"]:
-        return f"ТОНКО ${vol/1000:.0f}K", "#BA7517"
-    return f"МИМО ${vol/1000:.0f}K", "#A32D2D"
-
-# ── паттерн моментума по игре ──────────────────────────────────────────────────
-
-def momentum_hint(game):
-    if game == "cs2":
-        return "CS2: ставь ПРОТИВ победителя К1 (фав взял→BUY аутсайдер; апсет→BUY фаворит-камбэк)"
-    if game == "dota2":
-        return "Dota: ставь ЗА фаворита если он взял К1 (снежный ком). Камбэк убыточен."
-    if game == "valorant":
-        return "Valorant: ставь ЗА фаворита если он взял К1 (снежный ком). Против победителя −37%."
-    return ""
-
-def roi_hint_alert(game, fav_won_k1, map_score_t1, map_score_t2, vol):
-    """ROI подсказка для алерт-карточки с учётом кто взял К1 и счёта карты"""
-    if game == "cs2":
-        if fav_won_k1 is True:
-            k1_label = "Фав взял К1 → BUY аутсайдер"
-            # ROI по разрыву (из бэктеста $55-250K, фав взял К1)
-            roi_by_margin = {(1,4): "+47%", (5,7): "+57%", (8,99): "+27%"}
-            base_roi = "+57%"  # медиана всей группы
-        elif fav_won_k1 is False:
-            k1_label = "Апсет → BUY фаворит-камбэк"
-            # ROI по разрыву (из бэктеста $55-250K, апсет)
-            roi_by_margin = {(1,4): "+27%", (5,7): "+23%", (8,99): "+18%"}
-            base_roi = "+23%"  # медиана всей группы
-        else:
-            k1_label = "Визначаємо фаворита..."
-            roi_by_margin = {}
-            base_roi = "?"
-    elif game == "dota2":
-        if fav_won_k1 is True:
-            k1_label = "Фав взяв К1 → BUY фаворит (сніжний ком)"
-            roi_by_margin = {(1,4): "+20%", (5,7): "+28%", (8,99): "+33%"}
-            base_roi = "+28%"
-        else:
-            k1_label = "Апсет → пропуск (камбек збитковий)"
-            roi_by_margin = {}
-            base_roi = "−"
-    elif game == "valorant":
-        if fav_won_k1 is True:
-            k1_label = "Фав взяв К1 → BUY фаворит (сніжний ком)"
-            roi_by_margin = {(1,4): "+15%", (5,7): "+26%", (8,99): "+22%"}
-            base_roi = "+26%"
-        else:
-            k1_label = "Апсет → пропуск"
-            roi_by_margin = {}
-            base_roi = "−"
-    else:
-        return "", "", "", ""
-
-    # Счёт карты 1 → итоговый ROI
-    score_label = ""
-    score_hint = ""
-    final_roi = base_roi
-
-    if map_score_t1 is not None and map_score_t2 is not None and roi_by_margin:
-        margin = abs(int(map_score_t1) - int(map_score_t2))
-        s1, s2 = int(map_score_t1), int(map_score_t2)
-        for (lo, hi), roi in roi_by_margin.items():
-            if lo <= margin <= hi:
-                final_roi = roi
-                if margin <= 4:
-                    score_label = f"Тесно ({s1}:{s2}, розрив {margin})"
-                elif margin <= 7:
-                    score_label = f"Середньо ({s1}:{s2}, розрив {margin})"
-                else:
-                    score_label = f"Розгром ({s1}:{s2}, розрив {margin})"
-                score_hint = f"→ Підсумковий ROI {roi}"
-                break
-
-    return k1_label, final_roi, score_label, score_hint
+    if vol < th["kill"]:
+        return f"⛔ ${vol/1000:.0f}K", "#666666"           # килзон (мало)
+    if vol < th["green"]:
+        return f"🟡 ${vol/1000:.0f}K", "#BA7517"            # средний
+    return f"🟢 ${vol/1000:.0f}K", "#1D9E75"                # большой
 
 # ── цикл мониторинга ───────────────────────────────────────────────────────────
 
@@ -382,15 +302,16 @@ def monitor_loop():
                 if stotal <= 1:
                     window = (stotal == 1)   # 1:0 → окно дельта-нейтрали открыто
 
-                    # объём с кешем (тянем один раз на матч)
+                    # объём с TTL — перетягиваем вживую (объём растёт по ходу матча)
+                    now_m = time.time()
                     with LOCK:
                         cached = STATE["vol_cache"].get(mid)
-                    if cached is None:
+                    if cached is None or (now_m - cached[3]) > VOL_TTL:
                         cvol, ctitle, cslug = pm_volume(t1, t2, disc["pm_tag"])
                         with LOCK:
-                            STATE["vol_cache"][mid] = (cvol, ctitle, cslug)
+                            STATE["vol_cache"][mid] = (cvol, ctitle, cslug, now_m)
                     else:
-                        cvol, ctitle, cslug = cached
+                        cvol, ctitle, cslug = cached[0], cached[1], cached[2]
 
                     vtext, vcolor = vol_verdict(cvol, gk)
                     purl = f"https://polymarket.com/event/{cslug}" if cslug else ""
@@ -399,42 +320,12 @@ def monitor_loop():
                     th = VOL_THRESHOLDS[gk]
                     if cvol is None:
                         roi_hint = ""
-                    elif gk == "cs2" and cvol < th["kill"]:
-                        roi_hint = "⛔ killzone"
-                    elif cvol < th["fat"]:
-                        roi_hint = "ROI ~+40%"
-                    elif cvol < th["thin"]:
-                        roi_hint = "ROI ~+25%"
+                    elif cvol < th["kill"]:
+                        roi_hint = "⛔ килзон (мало)"
+                    elif cvol < th["green"]:
+                        roi_hint = "🟡 средний"
                     else:
-                        roi_hint = "нет edge"
-
-                    # Уточнённый ROI по исходу К1 (только при счёте 1:0)
-                    roi_k1 = ""
-                    if window:  # счёт 1:0 — знаем кто взял К1
-                        # Определяем фаворита через коэффициент букмекера
-                        # Меньший коэффициент = фаворит (это пред-матчевый показатель)
-                        bu = m.get("bet_updates") or {}
-                        t1_coeff = (bu.get("team_1") or {}).get("coeff") or 99
-                        t2_coeff = (bu.get("team_2") or {}).get("coeff") or 99
-                        if t1_coeff < t2_coeff:
-                            fav_name = t1
-                        elif t2_coeff < t1_coeff:
-                            fav_name = t2
-                        else:
-                            fav_name = None
-                        # Кто взял К1 = у кого больше счёт серии (надёжно з match_score)
-                        k1_winner = t1 if score[0] > score[1] else t2
-                        fav_won = (fav_name == k1_winner) if fav_name else None
-                        if gk == "cs2":
-                            if fav_won is True:
-                                roi_k1 = "фав взял → +57%"
-                            elif fav_won is False:
-                                roi_k1 = "апсет → +23%"
-                        elif gk in ("dota2", "valorant"):
-                            if fav_won is True:
-                                roi_k1 = "фав взял → +28%" if gk == "dota2" else "фав взял → +26%"
-                            elif fav_won is False:
-                                roi_k1 = "апсет → пропуск"
+                        roi_hint = "🟢 большой объём"
 
                     # Время старта по Киеву
                     sd = m.get("start_date", "")
@@ -451,7 +342,6 @@ def monitor_loop():
                         "vol_text": vtext, "vol_color": vcolor,
                         "pm_url": purl,
                         "roi_hint": roi_hint,
-                        "roi_k1": roi_k1,
                         "start_kyiv": start_kyiv,
                     })
 
@@ -496,24 +386,6 @@ def monitor_loop():
                     ms1 = m.get("team1_last_game_score")
                     ms2 = m.get("team2_last_game_score")
 
-                    # Кто победитель — фаворит или аутсайдер?
-                    # Определяем фаворита через коэффициент букмекера
-                    # Меньший коэффициент = фаворит (стабильный пред-матчевый показатель)
-                    bu = m.get("bet_updates") or {}
-                    t1_coeff = (bu.get("team_1") or {}).get("coeff") or 99
-                    t2_coeff = (bu.get("team_2") or {}).get("coeff") or 99
-                    if t1_coeff < t2_coeff:
-                        fav_name = t1
-                    elif t2_coeff < t1_coeff:
-                        fav_name = t2
-                    else:
-                        fav_name = None
-                    fav_won_k1 = (fav_name == winner) if fav_name else None
-
-                    k1_label, base_roi, score_label, score_hint = roi_hint_alert(
-                        gk, fav_won_k1, ms1, ms2, vol
-                    )
-
                     with LOCK:
                         STATE["alerts"].append({
                             "id": int(time.time() * 1000),
@@ -524,12 +396,7 @@ def monitor_loop():
                             "vol_text": vtext, "vol_color": vcolor,
                             "pm_title": pm_title or "",
                             "pm_url": pm_url,
-                            "hint": momentum_hint(gk),
                             "finished_at": now_ts(),
-                            "k1_label": k1_label,
-                            "base_roi": base_roi,
-                            "score_label": score_label,
-                            "score_hint": score_hint,
                             "map_score": f"{ms1}:{ms2}" if ms1 is not None else "",
                         })
                         STATE["alerts"] = STATE["alerts"][-5:]
@@ -578,14 +445,15 @@ def monitor_loop():
 
                         mid = m["id"]
                         ck = f"up_{mid}"
+                        now_u = time.time()
                         with LOCK:
                             cached = STATE["vol_cache"].get(ck)
-                        if cached is None:
+                        if cached is None or (now_u - cached[3]) > VOL_TTL:
                             cvol, ctitle, cslug = pm_volume(t1, t2, disc["pm_tag"])
                             with LOCK:
-                                STATE["vol_cache"][ck] = (cvol, ctitle, cslug)
+                                STATE["vol_cache"][ck] = (cvol, ctitle, cslug, now_u)
                         else:
-                            cvol, ctitle, cslug = cached
+                            cvol, ctitle, cslug = cached[0], cached[1], cached[2]
 
                         vtext, vcolor = vol_verdict(cvol, gk)
                         purl = f"https://polymarket.com/event/{cslug}" if cslug else ""
@@ -594,14 +462,12 @@ def monitor_loop():
                         th = VOL_THRESHOLDS[gk]
                         if cvol is None:
                             roi_hint = ""
-                        elif gk == "cs2" and cvol < th["kill"]:
-                            roi_hint = "⛔ killzone"
-                        elif cvol < th["fat"]:
-                            roi_hint = "ROI ~+40%"
-                        elif cvol < th["thin"]:
-                            roi_hint = "ROI ~+25%"
+                        elif cvol < th["kill"]:
+                            roi_hint = "⛔ килзон (мало)"
+                        elif cvol < th["green"]:
+                            roi_hint = "🟡 средний"
                         else:
-                            roi_hint = "нет edge"
+                            roi_hint = "🟢 большой объём"
 
                         all_upcoming.append({
                             "game": disc["label"],
@@ -1125,9 +991,6 @@ function renderLive(live){
     const roi = m.roi_hint
       ? `<span class="tag-vol" style="color:#888;border-color:#333;font-weight:400">${m.roi_hint}</span>`
       : '';
-    const roik1 = m.roi_k1
-      ? `<span class="tag-vol" style="color:#7FDDBB;border-color:#1D9E7555;font-weight:600">${m.roi_k1}</span>`
-      : '';
     const time = m.start_kyiv
       ? `<span class="tag-vol big-time" style="border-color:#3a4152">⏰ ${m.start_kyiv}</span>`
       : '';
@@ -1138,7 +1001,7 @@ function renderLive(live){
       <span class="g">${m.game}</span>
       <span class="nm">${escapeHtml(m.t1)} vs ${escapeHtml(m.t2)}</span>
       <span class="sc">${m.s1}:${m.s2}</span>
-      ${time}${win}${vol}${roi}${roik1}${link}
+      ${time}${win}${vol}${roi}${link}
     </div>`;
   }).join('');
 }
@@ -1156,22 +1019,6 @@ function buildCard(a){
   const mapScore = a.map_score
     ? `<div class="am2">Счёт серии: ${a.score} &nbsp;|&nbsp; Рахунок К1: <b>${a.map_score}</b></div>`
     : `<div class="am2">Счёт: ${a.score}</div>`;
-  const roiBlock = a.k1_label ? `
-    <div class="wb" style="margin-bottom:7px">
-      <div class="wl">Стратегія</div>
-      <div class="wn" style="font-size:14px">${escapeHtml(a.k1_label)}</div>
-    </div>
-    <div style="display:flex;gap:7px;margin-bottom:8px">
-      <div class="vb" style="flex:1;border:1px solid #378ADD44;background:#0a1520">
-        <div class="vl">Підсумковий ROI</div>
-        <div class="vv" style="color:#5BA3E0">${escapeHtml(a.base_roi)}</div>
-      </div>
-      ${a.score_label ? `<div class="vb" style="flex:2;border:1px solid #2a2d3a;background:#12151f">
-        <div class="vl">Рахунок К1</div>
-        <div class="vv" style="color:#e0e0e0;font-size:13px">${escapeHtml(a.score_label)}</div>
-        <div class="vt">${escapeHtml(a.score_hint)}</div>
-      </div>` : ''}
-    </div>` : '';
   return `<div class="ac show" data-id="${a.id}">
     <div class="achead">
       <div class="bd">🚨 Карта 1 завершена${fin}<span class="gm">${escapeHtml(a.game)}</span></div>
@@ -1180,18 +1027,12 @@ function buildCard(a){
     <div class="at">${escapeHtml(a.t1)} vs ${escapeHtml(a.t2)}</div>
     ${mapScore}
     <div class="wb"><div class="wl">Взял К1</div><div class="wn">✅ ${escapeHtml(a.winner)}</div></div>
-    <div class="legs">
-      <div class="leg"><div class="ll">Нога 1 — BUY серію</div><div class="lv">${escapeHtml(a.winner)}</div></div>
-      <div class="leg"><div class="ll">Нога 2 — BUY карту 2</div><div class="lv">${escapeHtml(a.loser)}</div></div>
-    </div>
-    ${roiBlock}
     <div class="vb" style="border:1px solid ${a.vol_color}66;background:${a.vol_color}1a">
       <div class="vl">Об'єм Polymarket</div>
       <div class="vv" style="color:${a.vol_color}">${escapeHtml(a.vol_text)}</div>
       <div class="vt">${escapeHtml(a.pm_title)||'Ринок не знайдено'}</div>
     </div>
     ${pmLink}
-    <div class="hint">${escapeHtml(a.hint)}</div>
   </div>`;
 }
 
@@ -1232,7 +1073,7 @@ function start(){
     body:JSON.stringify({games:getGames(),interval:parseInt(document.getElementById('iv').value)||20,min_tier:document.getElementById('tier').value})});
 }
 function stop(){fetch('/stop',{method:'POST'})}
-function test(){playPhase('m1start');setTimeout(()=>playPhase('m1end'),1700);setTimeout(()=>playPhase('m2end'),3600);const t=new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Kyiv'});showAlert({id:Date.now(),game:'CS2',t1:'Team Spirit',t2:'NAVI',score:'1:0',winner:'Team Spirit',loser:'NAVI',vol_text:'🟢 ЖИР  $87,000',vol_color:'#1D9E75',pm_title:'Counter-Strike: Spirit vs NAVI (BO3) - IEM Cologne',pm_url:'',hint:'CS2: ставь ПРОТИВ победителя К1 (фав взял→BUY аутсайдер)',finished_at:t,k1_label:'Фав взял К1 → BUY аутсайдер',base_roi:'+57%',score_label:'Тесно (16:12, разрыв 4)',score_hint:'→ ROI вище середнього (~+47%)',map_score:'16:12'})}
+function test(){playPhase('m1start');setTimeout(()=>playPhase('m1end'),1700);setTimeout(()=>playPhase('m2end'),3600);const t=new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Kyiv'});showAlert({id:Date.now(),game:'CS2',t1:'Team Spirit',t2:'NAVI',score:'1:0',winner:'Team Spirit',loser:'NAVI',vol_text:'🟢 БОЛЬШОЙ  $120,000',vol_color:'#1D9E75',pm_title:'Counter-Strike: Spirit vs NAVI (BO3) - IEM Cologne',pm_url:'',finished_at:t,map_score:'16:12'})}
 
 function switchTab(el){
   document.querySelectorAll('.tabbtn').forEach(b=>b.classList.remove('on'));
