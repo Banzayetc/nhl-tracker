@@ -977,13 +977,10 @@ button:active{opacity:.7}
 .wxlink{display:block;text-align:center;background:#13212e;color:#5BA3E0;border:1px solid #2a4a63;border-radius:6px;padding:6px;font-size:11px;text-decoration:none;font-weight:500}
 .wxlink:active{opacity:.7}
 .wxempty{font-size:12px;color:#444;font-style:italic}
+.big-vol{font-size:14px !important;font-weight:800 !important;padding:3px 11px !important}
+.big-time{font-size:13px !important;font-weight:700 !important;color:#e8e8e8 !important;border-color:#3a4152 !important}
 </style></head><body>
 <h1><div class="dot" id="dot"></div> Bo3 Monitor</h1>
-
-<div class="tabs">
-<div class="tabbtn on" data-tab="esports" onclick="switchTab(this)">⚔️ Кибер</div>
-<div class="tabbtn" data-tab="weather" onclick="switchTab(this)">🌡 Погода</div>
-</div>
 
 <div id="tab-esports">
 
@@ -1018,25 +1015,6 @@ button:active{opacity:.7}
 
 </div><!-- /tab-esports -->
 
-<div id="tab-weather" style="display:none">
-<div class="card" style="border-color:#2a4a63;background:#10202c">
-<h2 style="color:#5BA3E0">🌡 Погодний алерт · дневные температуры</h2>
-<div style="font-size:11px;color:#9fb6c8;line-height:1.5">
-Стратегія (бектест <b>1629 подій</b>, OOS-перевірка +28% t=4.8): за <b>~24г до кінця</b> купувати <b>фаворита</b> і тримати до резолюції.
-<b>Два сигнали:</b> ціна фаворита <b>&lt;50¢</b> (чим дешевше тим краще, &lt;30¢ найсильніше) <b>І</b> <b>низький обсяг</b> ринку (нижня третина — тонкі ринки недооцінюють фаворита, +24% vs ~0 на товстих).
-Регіон / Highest-Lowest / відрив — <b>шум</b> (не фільтруємо). 🟢 = обидва сигнали збіглися, ⚪ = пропустити.
-</div>
-</div>
-<div class="btns">
-<button class="start" onclick="loadWx()">🔄 Оновити ринки</button>
-<button class="test" onclick="wxAuto()" id="wxautobtn" title="Авто-оновлення">⏱</button>
-</div>
-<div id="wxstatus" style="font-size:11px;color:#555;margin-bottom:10px">—</div>
-<div class="wxcols">
-  <div id="wxlist" class="wxmain"></div>
-  <div id="wxbought" class="wxside"><div class="wxside-h">✅ Куплено</div></div>
-</div>
-</div><!-- /tab-weather -->
 
 <script>
 let lastAlertId=0, lastLogLen=0, running=false;
@@ -1120,15 +1098,15 @@ function renderUpcoming(upcoming){
   if(!upcoming||!upcoming.length){el.innerHTML='<span class="nolive">Нет запланированных матчей</span>';return}
   el.innerHTML=upcoming.map(m=>{
     const vol=m.vol_text&&m.vol_text!=='?'
-      ?`<span class="uvol" style="color:${m.vol_color};border-color:${m.vol_color}55">${m.vol_text}</span>`
-      :`<span class="uvol" style="color:#555;border-color:#333">нет рынка</span>`;
+      ?`<span class="uvol big-vol" style="color:${m.vol_color};border-color:${m.vol_color}55">${m.vol_text}</span>`
+      :`<span class="uvol big-vol" style="color:#888;border-color:#444">нет рынка</span>`;
     const roi=m.roi_hint?`<span class="uvol" style="color:#888;border-color:#333;font-weight:400">${m.roi_hint}</span>`:'';
     const link=m.pm_url?`<a class="ulink" href="${m.pm_url}" target="_blank">↗</a>`:'';
     const diffStr=m.diff_h<1?`${Math.round(m.diff_h*60)}мин`:`${m.diff_h.toFixed(1)}ч`;
     return `<div class="urow">
       <span class="ut">${escapeHtml(m.game)}</span>
       <span class="unm">${escapeHtml(m.t1)} vs ${escapeHtml(m.t2)}</span>
-      <span class="utime">⏰ ${m.kyiv_time} (через ${diffStr})</span>
+      <span class="utime big-time">⏰ ${m.kyiv_time} (через ${diffStr})</span>
       ${vol}${roi}${link}
     </div>`;
   }).join('');
@@ -1142,8 +1120,8 @@ function renderLive(live){
       ? `<span class="tag-win">🎯 Окно</span>`
       : `<span class="tag-wait">⏳ ждём К1</span>`;
     const vol = m.vol_text && m.vol_text!=='?'
-      ? `<span class="tag-vol" style="color:${m.vol_color};border-color:${m.vol_color}55">${m.vol_text}</span>`
-      : `<span class="tag-vol" style="color:#666;border-color:#333">нет рынка</span>`;
+      ? `<span class="tag-vol big-vol" style="color:${m.vol_color};border-color:${m.vol_color}55">${m.vol_text}</span>`
+      : `<span class="tag-vol big-vol" style="color:#888;border-color:#444">нет рынка</span>`;
     const roi = m.roi_hint
       ? `<span class="tag-vol" style="color:#888;border-color:#333;font-weight:400">${m.roi_hint}</span>`
       : '';
@@ -1151,7 +1129,7 @@ function renderLive(live){
       ? `<span class="tag-vol" style="color:#7FDDBB;border-color:#1D9E7555;font-weight:600">${m.roi_k1}</span>`
       : '';
     const time = m.start_kyiv
-      ? `<span class="tag-vol" style="color:#555;border-color:#2a2d3a;font-weight:400">⏰ ${m.start_kyiv}</span>`
+      ? `<span class="tag-vol big-time" style="border-color:#3a4152">⏰ ${m.start_kyiv}</span>`
       : '';
     const link = m.pm_url
       ? `<a class="tag-link" href="${m.pm_url}" target="_blank" title="Открыть на Polymarket">↗</a>`
