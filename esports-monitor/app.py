@@ -41,6 +41,31 @@ VOL_THRESHOLDS = {
 }
 VOL_TTL = 90   # сек: как часто перетягивать объём матча (живое обновление)
 
+# ── Polymarket read-only прокси (для анализа с заблокированного ISP) ──────────
+# Локально Polymarket режется провайдером (HTTP 451). Этот эндпоинт даёт чистый
+# выход к публичным read-API Polymarket. Только whitelisted-хосты + токен, чтобы
+# не был открытым прокси. GET /pm?k=TOKEN&u=<urlencoded url> — один запрос.
+# POST /pm?k=TOKEN  {"urls":[...]} — батч (список ответов в том же порядке).
+PM_PROXY_KEY = os.environ.get("PM_PROXY_KEY", "lob-2c95-pm-a7f2c9b5")
+PM_HOSTS = {"gamma-api.polymarket.com", "clob.polymarket.com",
+            "data-api.polymarket.com", "polymarket.com"}
+
+def _pm_fetch(url, timeout=15):
+    """Тянет один Polymarket URL. Возвращает распарсенный JSON или {'_err':...}."""
+    try:
+        host = urllib.parse.urlparse(url).hostname or ""
+        if host not in PM_HOSTS:
+            return {"_err": "host not allowed", "host": host}
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {"_raw": raw.decode("utf-8", "replace")}
+    except Exception as e:
+        return {"_err": str(e)}
+
 # Глобальное состояние (общий доступ из потоков)
 STATE = {
     "running": False,
@@ -514,6 +539,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "text/html; charset=utf-8", PAGE)
         elif self.path == "/ping":
             self._send(200, "text/plain", "pong")
+        elif self.path.startswith("/pm"):
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if (q.get("k", [""])[0]) != PM_PROXY_KEY:
+                self._send(403, "application/json", '{"_err":"forbidden"}')
+                return
+            u = q.get("u", [""])[0]
+            if not u:
+                self._send(400, "application/json", '{"_err":"missing u"}')
+                return
+            payload = _pm_fetch(u)
+            self._send(200, "application/json", json.dumps(payload, ensure_ascii=False))
         elif self.path.startswith("/weather"):
             try:
                 payload = scan_weather()
@@ -545,6 +581,19 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(raw)
         except Exception:
             data = {}
+
+        if self.path.startswith("/pm"):
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if (q.get("k", [""])[0]) != PM_PROXY_KEY:
+                self._send(403, "application/json", '{"_err":"forbidden"}')
+                return
+            urls = data.get("urls", [])
+            if not isinstance(urls, list):
+                urls = []
+            results = [_pm_fetch(u) for u in urls[:200]]
+            self._send(200, "application/json",
+                       json.dumps({"results": results}, ensure_ascii=False))
+            return
 
         if self.path == "/start":
             with LOCK:
