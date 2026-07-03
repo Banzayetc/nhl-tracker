@@ -909,7 +909,7 @@ function chosenVoice(){
   return pickFemaleVoice();
 }
 function curPitch(){let p=1.15;try{const s=localStorage.getItem('voicePitch');if(s)p=parseFloat(s);}catch(e){}return p;}
-function speak(txt){try{if(!window.speechSynthesis)return;speechSynthesis.resume();const u=new SpeechSynthesisUtterance(txt);u.lang='en-US';const v=chosenVoice();if(v){u.voice=v;u.lang=v.lang;}u.volume=.55;u.rate=.9;u.pitch=curPitch();speechSynthesis.cancel();setTimeout(()=>{try{speechSynthesis.resume();speechSynthesis.speak(u);}catch(e){}},60);}catch(e){}}
+function speak(txt,vol){try{if(!window.speechSynthesis)return;speechSynthesis.resume();const u=new SpeechSynthesisUtterance(txt);u.lang='en-US';const v=chosenVoice();if(v){u.voice=v;u.lang=v.lang;}u.volume=(vol||.55);u.rate=.9;u.pitch=curPitch();speechSynthesis.cancel();setTimeout(()=>{try{speechSynthesis.resume();speechSynthesis.speak(u);}catch(e){}},60);}catch(e){}}
 function toggleVoices(){const b=document.getElementById('voicebox');if(!b)return;if(b.style.display==='none'){b.style.display='block';renderVoices();}else{b.style.display='none';}}
 function renderVoices(){
   loadVoices();
@@ -933,7 +933,14 @@ function renderVoices(){
 function setPitch(val){try{localStorage.setItem('voicePitch',val);}catch(e){}previewVoice(null);}
 function setVoice(name){try{localStorage.setItem('voicePref',name);}catch(e){}renderVoices();previewVoice(name);}
 function previewVoice(name){try{if(!window.speechSynthesis)return;speechSynthesis.resume();const u=new SpeechSynthesisUtterance('Map one end');const v=name?_voices.find(x=>x.name===name):chosenVoice();if(v){u.voice=v;u.lang=v.lang;}u.volume=.6;u.rate=.9;u.pitch=curPitch();speechSynthesis.cancel();setTimeout(()=>{try{speechSynthesis.resume();speechSynthesis.speak(u);}catch(e){}},60);}catch(e){}}
-function playPhase(p){
+function playPhase(p,marked){
+  if(marked){
+    // помеченный матч — отдельный, более громкий сигнал
+    if(p==='m1start'){tones([[700,0],[900,.12],[1100,.24]],1.0);speak('Marked. Map one start',1.0);}
+    else if(p==='m1end'){tones([[1150,0],[880,.16],[1150,.32],[880,.48],[1150,.64]],1.0);speak('Marked match. Map one end',1.0);}
+    else if(p==='m2end'){tones([[950,0],[720,.2],[950,.4]],.95);speak('Marked. Map two end',1.0);}
+    return;
+  }
   if(p==='m1start'){tones([[520,0],[680,.18]],.26);speak('Map one start');}
   else if(p==='m1end'){tones([[820,0],[640,.2],[820,.4]],.5);speak('Map one end');}
   else if(p==='m2end'){tones([[700,0],[520,.2],[420,.4]],.36);speak('Map two end');}
@@ -945,7 +952,8 @@ function processSounds(arr){
   arr.forEach(s=>{
     if(!s||playedSounds.includes(s.id))return;
     playedSounds.push(s.id); if(playedSounds.length>40)playedSounds=playedSounds.slice(-40);
-    playPhase(s.phase); dot('alert');
+    let marked=false; try{marked=!!localStorage.getItem('mark:'+s.game+'|'+s.t1+'|'+s.t2);}catch(_){}
+    playPhase(s.phase,marked); dot('alert');
   });
 }
 
