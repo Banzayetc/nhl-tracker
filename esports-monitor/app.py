@@ -845,6 +845,8 @@ button:active{opacity:.7}
 .wxempty{font-size:12px;color:#444;font-style:italic}
 .big-vol{font-size:14px !important;font-weight:800 !important;padding:3px 11px !important}
 .big-time{font-size:13px !important;font-weight:700 !important;color:#e8e8e8 !important;border-color:#3a4152 !important}
+.markchk{width:15px;height:15px;cursor:pointer;accent-color:#D9A441;flex:none}
+.urow.marked,.pill2.marked{border-color:#D9A441 !important;background:rgba(217,164,65,.10) !important;box-shadow:inset 3px 0 0 #D9A441}
 </style></head><body>
 <h1><div class="dot" id="dot"></div> Bo3 Monitor</h1>
 
@@ -969,7 +971,9 @@ function renderUpcoming(upcoming){
     const roi=m.roi_hint?`<span class="uvol" style="color:#888;border-color:#333;font-weight:400">${m.roi_hint}</span>`:'';
     const link=m.pm_url?`<a class="ulink" href="${m.pm_url}" target="_blank">↗</a>`:'';
     const diffStr=m.diff_h<1?`${Math.round(m.diff_h*60)}мин`:`${m.diff_h.toFixed(1)}ч`;
-    return `<div class="urow">
+    const key='mark:'+m.game+'|'+m.t1+'|'+m.t2;
+    return `<div class="urow" data-mk="${escapeHtml(key)}">
+      <input type="checkbox" class="markchk" title="Пометить, чтобы не пропустить">
       <span class="ut">${escapeHtml(m.game)}</span>
       <span class="unm">${escapeHtml(m.t1)} vs ${escapeHtml(m.t2)}</span>
       <span class="utime big-time">⏰ ${m.kyiv_time} (через ${diffStr})</span>
@@ -997,13 +1001,30 @@ function renderLive(live){
     const link = m.pm_url
       ? `<a class="tag-link" href="${m.pm_url}" target="_blank" title="Открыть на Polymarket">↗</a>`
       : '';
-    return `<div class="pill2">
+    const key='mark:'+m.game+'|'+m.t1+'|'+m.t2;
+    return `<div class="pill2" data-mk="${escapeHtml(key)}">
+      <input type="checkbox" class="markchk" title="Пометить, чтобы не пропустить">
       <span class="g">${m.game}</span>
       <span class="nm">${escapeHtml(m.t1)} vs ${escapeHtml(m.t2)}</span>
       <span class="sc">${m.s1}:${m.s2}</span>
       ${time}${win}${vol}${roi}${link}
     </div>`;
   }).join('');
+}
+
+// Помеченные матчи (localStorage) — восстановить чекбоксы и подсветку после каждого ререндера
+function restoreMarks(){
+  document.querySelectorAll('[data-mk]').forEach(row=>{
+    const key=row.getAttribute('data-mk');
+    const chk=row.querySelector('.markchk');
+    if(!chk)return;
+    let on=false; try{on=!!localStorage.getItem(key);}catch(_){}
+    chk.checked=on; row.classList.toggle('marked',on);
+    chk.onchange=function(){
+      try{ if(chk.checked)localStorage.setItem(key,'1'); else localStorage.removeItem(key); }catch(_){}
+      row.classList.toggle('marked',chk.checked);
+    };
+  });
 }
 
 const MAX_ALERTS=5;
@@ -1061,7 +1082,7 @@ async function poll(){
   try{
     const r=await fetch('/state');const s=await r.json();
     running=s.running;const hasAlerts=document.getElementById('alerts').children.length>0;dot(running?(hasAlerts?'alert':'on'):(hasAlerts?'alert':''));
-    renderLog(s.log);renderLive(s.live);renderUpcoming(s.upcoming||[]);
+    renderLog(s.log);renderLive(s.live);renderUpcoming(s.upcoming||[]);restoreMarks();
     if(s.alerts)s.alerts.forEach(showAlert);
     processSounds(s.sounds);
   }catch(e){}
