@@ -839,12 +839,19 @@ def scan_tennis():
             return float(m.get("volumeNum") or m.get("volume") or 0)
         except Exception:
             return 0.0
-    def _startts(e):
-        sd = e.get("startDate") or ""
-        try:
-            return datetime.fromisoformat(sd.replace("Z", "+00:00")).timestamp()
-        except Exception:
-            return None
+    def _startts(mw, e):
+        # реальное время матча = market.gameStartTime; фолбэк — event.startDate.
+        for src in (mw.get("gameStartTime"), e.get("startDate")):
+            if not src:
+                continue
+            s = str(src).strip().replace(" ", "T").replace("Z", "+00:00")
+            if s.endswith("+00"):           # Py3.9: "+00" -> "+00:00"
+                s = s + ":00"
+            try:
+                return datetime.fromisoformat(s).timestamp()
+            except Exception:
+                continue
+        return None
     def _kyiv_label(ts):
         if ts is None:
             return None
@@ -918,7 +925,7 @@ def scan_tennis():
         else:
             # ── ещё не в перерыве — в watchlist (сортировка по времени начала) ──
             favi = 0 if mwp[0] >= mwp[1] else 1
-            st = _startts(e)
+            st = _startts(mw, e)
             watch.append({
                 "tour": title.split(":")[0],
                 "p1": (mo[0] if len(mo) > 0 else "?"), "p2": (mo[1] if len(mo) > 1 else "?"),
