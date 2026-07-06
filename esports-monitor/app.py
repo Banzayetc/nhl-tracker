@@ -845,6 +845,19 @@ def scan_tennis():
             return datetime.fromisoformat(sd.replace("Z", "+00:00")).timestamp()
         except Exception:
             return None
+    def _kyiv_label(ts):
+        if ts is None:
+            return None
+        try:
+            if KYIV:
+                dt = datetime.fromtimestamp(ts, KYIV)
+                today = datetime.now(KYIV).date()
+            else:
+                dt = datetime.utcfromtimestamp(ts)
+                today = datetime.utcnow().date()
+            return dt.strftime("%H:%M") if dt.date() == today else dt.strftime("%d.%m %H:%M")
+        except Exception:
+            return None
 
     breaks = []      # матчи в перерыве после сета 1 (счёт 1:0)
     watch = []       # ещё не в перерыве, но ликвидные Bo3 — что караулить
@@ -912,6 +925,7 @@ def scan_tennis():
                 "fav": (mo[favi] if len(mo) > favi else "?"), "fav_px": round(mwp[favi] * 100, 1),
                 "vol": round(mvol),
                 "hours": (round((st - now) / 3600, 1) if st is not None else None),
+                "start": _kyiv_label(st),
                 "g": gender, "_st": st,
                 "_favtk": (mwtk[favi] if len(mwtk) > favi else None),
                 "url": "https://polymarket.com/event/" + slug,
@@ -1124,7 +1138,7 @@ button:active{opacity:.7}
     <button onclick="loadTennis()">↻ Обновить</button>
   </div>
   <div id="tnlist"><span class="nolive">—</span></div>
-  <h2 style="font-size:15px;margin:20px 0 10px">⏳ Скоро / в игре · ликвидные Bo3 <span style="font-size:12px;color:#8fa0b2;font-weight:400">(глубина основного стакана — кого караулить)</span></h2>
+  <h2 style="font-size:15px;margin:20px 0 10px">⏳ Скоро / в игре · ликвидные Bo3 <span style="font-size:12px;color:#8fa0b2;font-weight:400">(глубина основного стакана · время киевское)</span></h2>
   <div id="tnwatch"><span class="nolive">—</span></div>
 </div>
 
@@ -1396,7 +1410,8 @@ function renderWatch(ms){
   box.innerHTML=ms.map(m=>{
     const g=m.g==='M'?'<span style="color:#4ab3f4">♂</span>':(m.g==='W'?'<span style="color:#f06ba0">♀</span>':'');
     const volk='$'+(m.vol>=1000?(m.vol/1000).toFixed(0)+'k':m.vol);
-    const hrs=(m.hours==null)?'':(m.hours<0?'в игре':('старт ⏳'+m.hours+'ч'));
+    const inplay=(m.hours!=null&&m.hours<0);
+    const hrs=(m.start==null)?(inplay?'в игре':''):(inplay?('в игре · с '+m.start):('старт '+m.start));
     return '<div class="tnrow">'
       +'<div class="tnr1"><span class="tntour">'+escapeHtml(m.tour)+' '+g+'</span>'
       +(hrs?'<span style="font-size:12px;color:#8fa0b2">'+hrs+'</span>':'')
