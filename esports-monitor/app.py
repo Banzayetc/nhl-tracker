@@ -556,6 +556,12 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 payload = {"events": [], "error": str(e)}
             self._send(200, "application/json", json.dumps(payload, ensure_ascii=False))
+        elif self.path.startswith("/tennis"):
+            try:
+                payload = scan_tennis()
+            except Exception as e:
+                payload = {"matches": [], "error": str(e)}
+            self._send(200, "application/json", json.dumps(payload, ensure_ascii=False))
         elif self.path.startswith("/diag"):
             with LOCK:
                 payload = {"diag": STATE["diag"], "count": len(STATE["diag"])}
@@ -761,6 +767,130 @@ def scan_weather():
     out.sort(key=_sk)
     return {"events": out, "vol_thr": round(vol_thr)}
 
+# ── ТЕННИС (Bo3) — стратегия «2 карты»: живые матчи в перерыве после сета 1 (1:0) ──
+# СТРОГО ТОЛЬКО Bo3. Мужские слэмы — Bo5 (до 3 сетов) — стратегия там НЕ работает,
+# отсекаем двумя признаками: (1) есть рынок Set 4/Set 5 Winner; (2) мужской слэм по slug/названию.
+TENNIS_SLAM = ("wimbledon", "us-open", "us open", "australian", "roland", "french open")
+
+def _tennis_is_bo3(slug, title, has_set45):
+    if has_set45:
+        return False                      # Set 4/5 Winner → это Bo5
+    sl = (slug + " " + title).lower()
+    is_slam = any(k in sl for k in TENNIS_SLAM)
+    is_men = (slug.lower().startswith("atp-") or "atp" in title.lower().split()
+              or "atp:" in title.lower() or "men'" in title.lower() or "men’" in title.lower())
+    if is_slam and is_men:
+        return False                      # мужской слэм = Bo5 (страховка)
+    return True
+
+def _tennis_forecast(t1s):
+    # оценка цены матча победителя сета 1 при счёте 1:1 (сглажено по базе 340 матчей)
+    for hi, f in [(55, 40), (62, 44), (70, 47), (78, 51), (86, 56), (101, 62)]:
+        if t1s < hi:
+            return f
+    return 62
+
+def _book_depth_usd(token, within=0.12, timeout=8):
+    """$ на асках (покупка ноги B) в пределах `within`¢ от лучшего аска."""
+    if not token:
+        return None
+    try:
+        b = http_get_json("https://clob.polymarket.com/book?token_id=%s" % token, timeout=timeout)
+    except Exception:
+        return None
+    asks = (b or {}).get("asks") or []
+    try:
+        pr = sorted((float(a["price"]), float(a["size"])) for a in asks)
+    except Exception:
+        return None
+    if not pr:
+        return 0
+    best = pr[0][0]
+    return round(sum(p * s for p, s in pr if p <= best + within))
+
+def scan_tennis():
+    url = ("https://gamma-api.polymarket.com/events?tag_slug=tennis"
+           "&closed=false&limit=300&order=startDate&ascending=false")
+    try:
+        ev = http_get_json(url) or []
+    except Exception as e:
+        return {"matches": [], "error": str(e)}
+
+    def _pr(m):
+        try:
+            return [float(x) for x in json.loads(m.get("outcomePrices") or "[]")]
+        except Exception:
+            return []
+    def _o(m):
+        try:
+            return json.loads(m.get("outcomes") or "[]")
+        except Exception:
+            return []
+    def _tk(m):
+        try:
+            return json.loads(m.get("clobTokenIds") or "[]")
+        except Exception:
+            return []
+
+    out = []
+    for e in ev:
+        title = e.get("title", "") or ""
+        if " vs " not in title:
+            continue
+        low = title.lower()
+        if any(k in low for k in ("double", "junior", "winner", "reach", "code", "dress", "longest")):
+            continue
+        slug = e.get("slug", "") or ""
+        mks = e.get("markets", []) or []
+        mw = s1 = s2 = None
+        has45 = False
+        for m in mks:
+            q = (m.get("question") or "")
+            if q == title:
+                mw = m
+            elif q.startswith("Set 1 Winner"):
+                s1 = m
+            elif q.startswith("Set 2 Winner"):
+                s2 = m
+            elif q.startswith("Set 4 Winner") or q.startswith("Set 5 Winner"):
+                has45 = True
+        if not (mw and s1 and s2):
+            continue                              # нужны все три рынка
+        if not _tennis_is_bo3(slug, title, has45):
+            continue                              # ← СТРОГО Bo3, Bo5 отсекаем
+        s1p, s2p, mwp = _pr(s1), _pr(s2), _pr(mw)
+        if len(s1p) < 2 or len(s2p) < 2 or len(mwp) < 2:
+            continue
+        # состояние «перерыв 1:0»: сет 1 решён, сет 2 ещё нет
+        if max(s1p) < 0.93:
+            continue                              # сет 1 не завершён/не решён
+        if max(s2p) >= 0.90:
+            continue                              # сет 2 уже завершён — не в перерыве
+        s1o, mo = _o(s1), _o(mw)
+        s1w = 0 if s1p[0] >= s1p[1] else 1        # победитель сета 1 (индекс в Set1)
+        sn = (s1o[s1w].split()[-1].lower() if len(s1o) > s1w else "")
+        mwi = 0 if (len(mo) >= 2 and sn and sn in mo[0].lower()) else 1
+        t1s = round(mwp[mwi] * 100, 1)            # цена матча победителя сета 1
+        loser = 1 - s1w
+        t2m = round(s2p[loser] * 100, 1)          # нога B: Set 2 проигравшего сета 1
+        winner = mo[mwi] if len(mo) > mwi else (s1o[s1w] if len(s1o) > s1w else "?")
+        loser_nm = mo[1 - mwi] if len(mo) > (1 - mwi) else "?"
+        zone = "green" if t1s <= 65 else ("yellow" if t1s <= 80 else "red")
+        f = _tennis_forecast(t1s)
+        edge = round(100 - (t1s + (1 - f / 100.0) * t2m), 1)
+        s2tk = _tk(s2)
+        depth = _book_depth_usd(s2tk[loser]) if len(s2tk) > loser else None
+        gender = ("M" if slug.lower().startswith("atp-")
+                  else ("W" if slug.lower().startswith("wta-") else "?"))
+        out.append({
+            "tour": title.split(":")[0], "winner": winner, "loser": loser_nm, "g": gender,
+            "t1s": t1s, "t2m": t2m, "zone": zone, "forecast": f, "edge": edge,
+            "s2_depth": depth, "url": "https://polymarket.com/event/" + slug,
+        })
+    zrank = {"green": 0, "yellow": 1, "red": 2}
+    out.sort(key=lambda x: (zrank.get(x["zone"], 3), -(x["s2_depth"] or 0), -x["edge"]))
+    return {"matches": out, "count": len(out)}
+
 PAGE = r"""<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Esports Bo3 Monitor</title>
@@ -896,8 +1026,26 @@ button:active{opacity:.7}
 .big-time{font-size:13px !important;font-weight:700 !important;color:#e8e8e8 !important;border-color:#3a4152 !important}
 .markchk{width:15px;height:15px;cursor:pointer;accent-color:#D9A441;flex:none}
 .urow.marked,.pill2.marked{border-color:#D9A441 !important;background:rgba(217,164,65,.10) !important;box-shadow:inset 3px 0 0 #D9A441}
+.tabs{display:flex;gap:8px;margin:0 0 16px}
+.tnhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:4px 0 14px}
+.tnhead h2{margin:0;font-size:16px}
+#tnstatus{font-size:12px;color:#8aa0b0}
+.tnhead button{background:#13212e;border:1px solid #2a3d4a;color:#9fcdf0;border-radius:7px;padding:6px 12px;cursor:pointer;font-size:13px}
+.tnrow{background:#0e1620;border:1px solid #1e2a38;border-radius:11px;padding:12px 14px;margin-bottom:10px}
+.tnr1{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.tntour{font-weight:700;font-size:13px;color:#cdd8e5}
+.tnzone{font-size:11px;font-weight:700;letter-spacing:.05em;padding:2px 8px;border-radius:20px}
+.tnlink{margin-left:auto;font-size:12px;color:#5BA3E0;text-decoration:none}
+.tnr2{font-size:13px;color:#b9c6d4;margin-bottom:6px}
+.tnr3{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:#8fa0b2;margin-bottom:6px}
+.tnr4{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;font-weight:600}
 </style></head><body>
 <h1><div class="dot" id="dot"></div> Bo3 Monitor</h1>
+
+<div class="tabs">
+  <div class="tabbtn on" data-tab="esports" onclick="switchTab(this)">🎮 Киберспорт</div>
+  <div class="tabbtn" data-tab="tennis" onclick="switchTab(this)">🎾 Теннис (Bo3)</div>
+</div>
 
 <div id="tab-esports">
 
@@ -931,6 +1079,15 @@ button:active{opacity:.7}
 <div class="logw"><div class="logh">Лог</div><div class="logb" id="log"></div></div>
 
 </div><!-- /tab-esports -->
+
+<div id="tab-tennis" style="display:none">
+  <div class="tnhead">
+    <h2>🎾 Теннис Bo3 · перерыв после сета 1 (счёт 1:0)</h2>
+    <span id="tnstatus">—</span>
+    <button onclick="loadTennis()">↻ Обновить</button>
+  </div>
+  <div id="tnlist"><span class="nolive">—</span></div>
+</div>
 
 
 <script>
@@ -1158,8 +1315,42 @@ function switchTab(el){
   el.classList.add('on');
   const t=el.dataset.tab;
   document.getElementById('tab-esports').style.display = t==='esports'?'':'none';
-  document.getElementById('tab-weather').style.display = t==='weather'?'':'none';
-  if(t==='weather' && !wxLoaded){loadWx()}
+  const tn=document.getElementById('tab-tennis'); if(tn) tn.style.display = t==='tennis'?'':'none';
+  if(t==='tennis'){ loadTennis(); if(!tnTimer) tnTimer=setInterval(loadTennis,45000); }
+  else if(tnTimer){ clearInterval(tnTimer); tnTimer=null; }
+}
+let tnTimer=null;
+async function loadTennis(){
+  const st=document.getElementById('tnstatus'); if(st)st.textContent='загрузка…';
+  try{
+    const r=await fetch('/tennis'); const d=await r.json();
+    renderTennis(d.matches||[]);
+    const tm=new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
+    if(st)st.textContent=(d.matches?d.matches.length:0)+' в перерыве 1:0 · '+tm+(d.error?(' · ошибка: '+d.error):'');
+  }catch(e){ if(st)st.textContent='ошибка загрузки'; }
+}
+function renderTennis(ms){
+  const box=document.getElementById('tnlist'); if(!box)return;
+  if(!ms.length){box.innerHTML='<span class="nolive">Нет матчей в перерыве после сета 1 (Bo3)</span>';return;}
+  const zc={green:'#34d399',yellow:'#e8b84a',red:'#f0556b'}, zt={green:'ЗЕЛЁНАЯ',yellow:'ЖЁЛТАЯ',red:'КРАСНАЯ'};
+  const wl=s=>escapeHtml((String(s||'').split(' ').pop())||String(s||''));
+  box.innerHTML=ms.map(m=>{
+    const z=zc[m.zone]||'#888';
+    const dep=m.s2_depth==null?'—':('$'+(m.s2_depth>=1000?(m.s2_depth/1000).toFixed(1)+'k':m.s2_depth));
+    const liqOk=(m.s2_depth||0)>=2000;
+    const g=m.g==='M'?'<span style="color:#4ab3f4">♂</span>':(m.g==='W'?'<span style="color:#f06ba0">♀</span>':'');
+    const ec=m.edge>=10?'#34d399':(m.edge>=0?'#e8b84a':'#f0556b');
+    return '<div class="tnrow" style="border-left:4px solid '+z+'">'
+      +'<div class="tnr1"><span class="tntour">'+escapeHtml(m.tour)+' '+g+'</span>'
+      +'<span class="tnzone" style="color:'+z+';border:1px solid '+z+'66">'+(zt[m.zone]||'')+' '+m.t1s+'¢</span>'
+      +'<a class="tnlink" href="'+m.url+'" target="_blank">↗ Polymarket</a></div>'
+      +'<div class="tnr2"><b>'+escapeHtml(m.winner)+'</b> взял сет 1 · соперник <b>'+escapeHtml(m.loser)+'</b></div>'
+      +'<div class="tnr3"><span>Нога A: матч '+wl(m.winner)+' по <b>'+m.t1s+'¢</b> → при 1:1 продать ≈'+m.forecast+'¢</span>'
+      +'<span>Нога B: Set 2 '+wl(m.loser)+' по <b>'+m.t2m+'¢</b></span></div>'
+      +'<div class="tnr4"><span style="color:'+ec+'">EDGE ≈ '+(m.edge>=0?'+':'')+m.edge+'¢</span>'
+      +'<span style="color:'+(liqOk?'#34d399':'#f0556b')+'">стакан Set 2: '+dep+' '+(liqOk?'✓ ликвидно':'⚠ тонко')+'</span></div>'
+      +'</div>';
+  }).join('');
 }
 let wxLoaded=false, wxTimer=null;
 async function loadWx(){
