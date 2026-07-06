@@ -832,7 +832,22 @@ def scan_tennis():
         except Exception:
             return []
 
-    out = []
+    import time as _t
+    now = _t.time()
+    def _vol(m):
+        try:
+            return float(m.get("volumeNum") or m.get("volume") or 0)
+        except Exception:
+            return 0.0
+    def _startts(e):
+        sd = e.get("startDate") or ""
+        try:
+            return datetime.fromisoformat(sd.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            return None
+
+    breaks = []      # матчи в перерыве после сета 1 (счёт 1:0)
+    watch = []       # ещё не в перерыве, но ликвидные Bo3 — что караулить
     for e in ev:
         title = e.get("title", "") or ""
         if " vs " not in title:
@@ -861,35 +876,57 @@ def scan_tennis():
         s1p, s2p, mwp = _pr(s1), _pr(s2), _pr(mw)
         if len(s1p) < 2 or len(s2p) < 2 or len(mwp) < 2:
             continue
-        # состояние «перерыв 1:0»: сет 1 решён, сет 2 ещё нет
-        if max(s1p) < 0.93:
-            continue                              # сет 1 не завершён/не решён
-        if max(s2p) >= 0.90:
-            continue                              # сет 2 уже завершён — не в перерыве
-        s1o, mo = _o(s1), _o(mw)
-        s1w = 0 if s1p[0] >= s1p[1] else 1        # победитель сета 1 (индекс в Set1)
-        sn = (s1o[s1w].split()[-1].lower() if len(s1o) > s1w else "")
-        mwi = 0 if (len(mo) >= 2 and sn and sn in mo[0].lower()) else 1
-        t1s = round(mwp[mwi] * 100, 1)            # цена матча победителя сета 1
-        loser = 1 - s1w
-        t2m = round(s2p[loser] * 100, 1)          # нога B: Set 2 проигравшего сета 1
-        winner = mo[mwi] if len(mo) > mwi else (s1o[s1w] if len(s1o) > s1w else "?")
-        loser_nm = mo[1 - mwi] if len(mo) > (1 - mwi) else "?"
-        zone = "green" if t1s <= 65 else ("yellow" if t1s <= 80 else "red")
-        f = _tennis_forecast(t1s)
-        edge = round(100 - (t1s + (1 - f / 100.0) * t2m), 1)
-        s2tk = _tk(s2)
-        depth = _book_depth_usd(s2tk[loser]) if len(s2tk) > loser else None
+        mo, mwtk = _o(mw), _tk(mw)
         gender = ("M" if slug.lower().startswith("atp-")
                   else ("W" if slug.lower().startswith("wta-") else "?"))
-        out.append({
-            "tour": title.split(":")[0], "winner": winner, "loser": loser_nm, "g": gender,
-            "t1s": t1s, "t2m": t2m, "zone": zone, "forecast": f, "edge": edge,
-            "s2_depth": depth, "url": "https://polymarket.com/event/" + slug,
-        })
+        mvol = _vol(mw)
+        if max(s2p) >= 0.90:
+            continue                              # сет 2 уже сыгран — вне окна стратегии
+        if max(s1p) >= 0.93:
+            # ── перерыв 1:0 ──
+            s1o = _o(s1)
+            s1w = 0 if s1p[0] >= s1p[1] else 1
+            sn = (s1o[s1w].split()[-1].lower() if len(s1o) > s1w else "")
+            mwi = 0 if (len(mo) >= 2 and sn and sn in mo[0].lower()) else 1
+            t1s = round(mwp[mwi] * 100, 1)
+            loser = 1 - s1w
+            t2m = round(s2p[loser] * 100, 1)
+            winner = mo[mwi] if len(mo) > mwi else "?"
+            loser_nm = mo[1 - mwi] if len(mo) > (1 - mwi) else "?"
+            zone = "green" if t1s <= 65 else ("yellow" if t1s <= 80 else "red")
+            f = _tennis_forecast(t1s)
+            edge = round(100 - (t1s + (1 - f / 100.0) * t2m), 1)
+            depth = _book_depth_usd(mwtk[mwi]) if len(mwtk) > mwi else None  # основной стакан (нога A)
+            breaks.append({
+                "tour": title.split(":")[0], "winner": winner, "loser": loser_nm, "g": gender,
+                "t1s": t1s, "t2m": t2m, "zone": zone, "forecast": f, "edge": edge,
+                "depth": depth, "url": "https://polymarket.com/event/" + slug,
+            })
+        else:
+            # ── ещё не в перерыве — в watchlist (сортировка по времени начала) ──
+            favi = 0 if mwp[0] >= mwp[1] else 1
+            st = _startts(e)
+            watch.append({
+                "tour": title.split(":")[0],
+                "p1": (mo[0] if len(mo) > 0 else "?"), "p2": (mo[1] if len(mo) > 1 else "?"),
+                "fav": (mo[favi] if len(mo) > favi else "?"), "fav_px": round(mwp[favi] * 100, 1),
+                "vol": round(mvol),
+                "hours": (round((st - now) / 3600, 1) if st is not None else None),
+                "g": gender, "_st": st,
+                "_favtk": (mwtk[favi] if len(mwtk) > favi else None),
+                "url": "https://polymarket.com/event/" + slug,
+            })
     zrank = {"green": 0, "yellow": 1, "red": 2}
-    out.sort(key=lambda x: (zrank.get(x["zone"], 3), -(x["s2_depth"] or 0), -x["edge"]))
-    return {"matches": out, "count": len(out)}
+    breaks.sort(key=lambda x: (zrank.get(x["zone"], 3), -(x["depth"] or 0), -x["edge"]))
+    # watchlist: топ по обороту, для топ-15 подтягиваем глубину основного стакана
+    # сортировка по ВРЕМЕНИ НАЧАЛА (ближайшие/идущие сверху), затем глубину стакана для показанных
+    watch.sort(key=lambda x: (x["_st"] if x["_st"] is not None else 9e18))
+    watch = watch[:20]
+    for w in watch:
+        tk = w.pop("_favtk", None)
+        w["depth"] = _book_depth_usd(tk) if tk else None
+        w.pop("_st", None)
+    return {"matches": breaks, "upcoming": watch, "count": len(breaks)}
 
 PAGE = r"""<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1087,6 +1124,8 @@ button:active{opacity:.7}
     <button onclick="loadTennis()">↻ Обновить</button>
   </div>
   <div id="tnlist"><span class="nolive">—</span></div>
+  <h2 style="font-size:15px;margin:20px 0 10px">⏳ Скоро / в игре · ликвидные Bo3 <span style="font-size:12px;color:#8fa0b2;font-weight:400">(глубина основного стакана — кого караулить)</span></h2>
+  <div id="tnwatch"><span class="nolive">—</span></div>
 </div>
 
 
@@ -1320,24 +1359,24 @@ function switchTab(el){
   else if(tnTimer){ clearInterval(tnTimer); tnTimer=null; }
 }
 let tnTimer=null;
+function _dep(v){return v==null?'—':('$'+(v>=1000?(v/1000).toFixed(1)+'k':v));}
+function _liqSpan(v){var ok=(v||0)>=2000;return '<span style="color:'+(v==null?'#8fa0b2':(ok?'#34d399':'#f0556b'))+'">стакан матча: '+_dep(v)+(v==null?'':(ok?' ✓ ликвидно':' ⚠ тонко'))+'</span>';}
 async function loadTennis(){
   const st=document.getElementById('tnstatus'); if(st)st.textContent='загрузка…';
   try{
     const r=await fetch('/tennis'); const d=await r.json();
-    renderTennis(d.matches||[]);
+    renderBreaks(d.matches||[]); renderWatch(d.upcoming||[]);
     const tm=new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
-    if(st)st.textContent=(d.matches?d.matches.length:0)+' в перерыве 1:0 · '+tm+(d.error?(' · ошибка: '+d.error):'');
+    if(st)st.textContent=(d.matches?d.matches.length:0)+' в перерыве 1:0 · '+((d.upcoming||[]).length)+' на карауле · '+tm+(d.error?(' · ошибка: '+d.error):'');
   }catch(e){ if(st)st.textContent='ошибка загрузки'; }
 }
-function renderTennis(ms){
+function renderBreaks(ms){
   const box=document.getElementById('tnlist'); if(!box)return;
   if(!ms.length){box.innerHTML='<span class="nolive">Нет матчей в перерыве после сета 1 (Bo3)</span>';return;}
   const zc={green:'#34d399',yellow:'#e8b84a',red:'#f0556b'}, zt={green:'ЗЕЛЁНАЯ',yellow:'ЖЁЛТАЯ',red:'КРАСНАЯ'};
   const wl=s=>escapeHtml((String(s||'').split(' ').pop())||String(s||''));
   box.innerHTML=ms.map(m=>{
     const z=zc[m.zone]||'#888';
-    const dep=m.s2_depth==null?'—':('$'+(m.s2_depth>=1000?(m.s2_depth/1000).toFixed(1)+'k':m.s2_depth));
-    const liqOk=(m.s2_depth||0)>=2000;
     const g=m.g==='M'?'<span style="color:#4ab3f4">♂</span>':(m.g==='W'?'<span style="color:#f06ba0">♀</span>':'');
     const ec=m.edge>=10?'#34d399':(m.edge>=0?'#e8b84a':'#f0556b');
     return '<div class="tnrow" style="border-left:4px solid '+z+'">'
@@ -1347,8 +1386,23 @@ function renderTennis(ms){
       +'<div class="tnr2"><b>'+escapeHtml(m.winner)+'</b> взял сет 1 · соперник <b>'+escapeHtml(m.loser)+'</b></div>'
       +'<div class="tnr3"><span>Нога A: матч '+wl(m.winner)+' по <b>'+m.t1s+'¢</b> → при 1:1 продать ≈'+m.forecast+'¢</span>'
       +'<span>Нога B: Set 2 '+wl(m.loser)+' по <b>'+m.t2m+'¢</b></span></div>'
-      +'<div class="tnr4"><span style="color:'+ec+'">EDGE ≈ '+(m.edge>=0?'+':'')+m.edge+'¢</span>'
-      +'<span style="color:'+(liqOk?'#34d399':'#f0556b')+'">стакан Set 2: '+dep+' '+(liqOk?'✓ ликвидно':'⚠ тонко')+'</span></div>'
+      +'<div class="tnr4"><span style="color:'+ec+'">EDGE ≈ '+(m.edge>=0?'+':'')+m.edge+'¢</span>'+_liqSpan(m.depth)+'</div>'
+      +'</div>';
+  }).join('');
+}
+function renderWatch(ms){
+  const box=document.getElementById('tnwatch'); if(!box)return;
+  if(!ms.length){box.innerHTML='<span class="nolive">Нет ликвидных Bo3 в ближайшем окне</span>';return;}
+  box.innerHTML=ms.map(m=>{
+    const g=m.g==='M'?'<span style="color:#4ab3f4">♂</span>':(m.g==='W'?'<span style="color:#f06ba0">♀</span>':'');
+    const volk='$'+(m.vol>=1000?(m.vol/1000).toFixed(0)+'k':m.vol);
+    const hrs=(m.hours==null)?'':(m.hours<0?'в игре':('старт ⏳'+m.hours+'ч'));
+    return '<div class="tnrow">'
+      +'<div class="tnr1"><span class="tntour">'+escapeHtml(m.tour)+' '+g+'</span>'
+      +(hrs?'<span style="font-size:12px;color:#8fa0b2">'+hrs+'</span>':'')
+      +'<a class="tnlink" href="'+m.url+'" target="_blank">↗ Polymarket</a></div>'
+      +'<div class="tnr2">'+escapeHtml(m.p1)+' vs '+escapeHtml(m.p2)+' · фаворит <b>'+escapeHtml(m.fav)+'</b> '+m.fav_px+'¢</div>'
+      +'<div class="tnr4"><span style="color:#8fa0b2">оборот '+volk+'</span>'+_liqSpan(m.depth)+'</div>'
       +'</div>';
   }).join('');
 }
