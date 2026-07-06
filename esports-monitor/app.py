@@ -562,6 +562,12 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 payload = {"matches": [], "error": str(e)}
             self._send(200, "application/json", json.dumps(payload, ensure_ascii=False))
+        elif self.path.startswith("/bo5"):
+            try:
+                payload = scan_bo5()
+            except Exception as e:
+                payload = {"series": [], "watch": [], "error": str(e)}
+            self._send(200, "application/json", json.dumps(payload, ensure_ascii=False))
         elif self.path.startswith("/diag"):
             with LOCK:
                 payload = {"diag": STATE["diag"], "count": len(STATE["diag"])}
@@ -949,6 +955,126 @@ def scan_tennis():
         w.pop("_st", None)
     return {"matches": breaks, "upcoming": watch, "count": len(breaks)}
 
+# ── Bo5 «2 карты» (LoL + мужской теннис-слэм): серия-пойнт 2:1 ──────────────────
+# Вход на 2:1 (лидер в 1 карте/сете от победы). Счёт реконструируется по резолву
+# Game/Set X Winner рынков. Серия закрыта = match-winner резолвнут (max>=0.985) → скип.
+def _bo5_forecast(sport, t1s):
+    tbl = ([(60,33),(68,39),(76,55),(84,59),(92,78),(101,90)] if sport=="lol"
+           else [(60,41),(68,47),(76,54),(84,65),(92,71),(101,85)])
+    for hi, f in tbl:
+        if t1s < hi:
+            return f
+    return tbl[-1][1]
+
+_BO5_CFG = {
+    "lol":    {"tag":"league-of-legends", "unit":"Game", "icon":"🎮", "url_pref":"lol"},
+    "tennis": {"tag":"tennis",            "unit":"Set",  "icon":"🎾", "url_pref":"tennis"},
+}
+
+def _scan_bo5_sport(sport):
+    import time as _t
+    cfg=_BO5_CFG[sport]; now=_t.time()
+    ure=re.compile(cfg["unit"]+r" (\d) Winner")
+    url=("https://gamma-api.polymarket.com/events?tag_slug=%s&closed=false"
+         "&limit=300&order=startDate&ascending=false" % cfg["tag"])
+    try:
+        ev=http_get_json(url) or []
+    except Exception:
+        return [], []
+    def _pr(m):
+        try: return [float(x) for x in json.loads(m.get("outcomePrices") or "[]")]
+        except Exception: return []
+    def _o(m):
+        try: return json.loads(m.get("outcomes") or "[]")
+        except Exception: return []
+    def _tk(m):
+        try: return json.loads(m.get("clobTokenIds") or "[]")
+        except Exception: return []
+    def _kyiv(ts):
+        try:
+            dt=datetime.fromtimestamp(ts, KYIV) if KYIV else datetime.utcfromtimestamp(ts)
+            return dt.strftime("%H:%M")
+        except Exception: return None
+    def _st(mw,e):
+        for s in (mw.get("gameStartTime"), e.get("startDate")):
+            if not s: continue
+            x=str(s).strip().replace(" ","T").replace("Z","+00:00")
+            if x.endswith("+00"): x+=":00"
+            try: return datetime.fromisoformat(x).timestamp()
+            except Exception: continue
+        return None
+    series=[]; watch=[]
+    for e in ev:
+        t=e.get("title","") or ""
+        if " vs " not in t: continue
+        low=t.lower()
+        if any(k in low for k in ("double","junior","winner","reach","code","dress")): continue
+        mks=e.get("markets",[]) or []
+        mw=None; units={}
+        for m in mks:
+            q=(m.get("question") or "")
+            if q==t: mw=m
+            g=ure.search(q)
+            if g: units[int(g.group(1))]=m
+        if not mw or not units: continue
+        is_bo5 = (4 in units) or (5 in units) or ("(BO5)" in t) or ("bo5" in low)
+        if not is_bo5: continue
+        mwp=_pr(mw); mo=_o(mw); mtk=_tk(mw)
+        if len(mwp)<2 or len(mo)<2: continue
+        try: mvol=round(float(mw.get("volumeNum") or mw.get("volume") or 0))
+        except Exception: mvol=0
+        if max(mwp)>=0.985: continue          # серия закрыта
+        s0=s1=0; resolved=0
+        for i in sorted(units):
+            up=_pr(units[i])
+            if len(up)<2 or max(up)<0.9: break
+            uo=_o(units[i]); win=0 if up[0]>=up[1] else 1
+            wn=(uo[win].split()[-1].lower() if uo else "")
+            side=0 if (wn and wn in mo[0].lower()) else 1
+            if side==0: s0+=1
+            else: s1+=1
+            resolved+=1
+            if max(s0,s1)>=3: break
+        lead=max(s0,s1); trail=min(s0,s1)
+        if lead>=3: continue
+        depth=None
+        fav_i = 0 if mwp[0]>=mwp[1] else 1
+        if lead==2 and trail in (0,1):
+            lidx = 0 if s0>s1 else 1
+            t1s=round(mwp[lidx]*100,1)
+            nN=resolved+1; t2m=None
+            if nN in units:
+                np=_pr(units[nN]); no=_o(units[nN])
+                if len(np)>=2 and len(no)>=2:
+                    ln=mo[1-lidx].split()[-1].lower()
+                    ti=0 if ln in no[0].lower() else 1
+                    t2m=round(np[ti]*100,1)
+            zone="green" if t1s<=65 else ("yellow" if t1s<=80 else "red")
+            f=_bo5_forecast(sport,t1s)
+            edge=round(100-(t1s+(1-f/100.0)*t2m),1) if t2m is not None else None
+            depth=_book_depth_usd(mtk[lidx]) if len(mtk)>lidx else None
+            series.append({"sport":sport,"icon":cfg["icon"],"tour":t.split(" (")[0][:44],
+                "sc":"%d:%d"%(lead,trail),"leader":mo[lidx],"trailer":mo[1-lidx],
+                "t1s":t1s,"t2m":t2m,"zone":zone,"forecast":f,"edge":edge,"depth":depth,"vol":mvol,
+                "url":"https://polymarket.com/event/"+(e.get("slug","") or "")})
+        else:
+            st=_st(mw,e); depthw=_book_depth_usd(mtk[fav_i]) if len(mtk)>fav_i else None
+            watch.append({"sport":sport,"icon":cfg["icon"],"tour":t.split(" (")[0][:44],
+                "sc":"%d:%d"%(s0,s1),"fav":mo[fav_i],"favpx":round(mwp[fav_i]*100,1),
+                "depth":depthw,"vol":mvol,"start":_kyiv(st),"_st":st,
+                "url":"https://polymarket.com/event/"+(e.get("slug","") or "")})
+    return series, watch
+
+def scan_bo5():
+    ser=[]; watch=[]
+    for sp in ("lol","tennis"):
+        s,w=_scan_bo5_sport(sp); ser+=s; watch+=w
+    zr={"green":0,"yellow":1,"red":2}
+    ser.sort(key=lambda x:(zr.get(x["zone"],3), -(x["depth"] or 0)))
+    watch.sort(key=lambda x:(x["_st"] if x["_st"] is not None else 9e18))
+    for w in watch: w.pop("_st",None)
+    return {"series":ser, "watch":watch[:30], "count":len(ser)}
+
 PAGE = r"""<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Esports Bo3 Monitor</title>
@@ -1103,6 +1229,7 @@ button:active{opacity:.7}
 <div class="tabs">
   <div class="tabbtn on" data-tab="esports" onclick="switchTab(this)">🎮 Киберспорт</div>
   <div class="tabbtn" data-tab="tennis" onclick="switchTab(this)">🎾 Теннис (Bo3)</div>
+  <div class="tabbtn" data-tab="bo5" onclick="switchTab(this)">🏆 Bo5 · 2:1</div>
 </div>
 
 <div id="tab-esports">
@@ -1147,6 +1274,22 @@ button:active{opacity:.7}
   <div id="tnlist"><span class="nolive">—</span></div>
   <h2 style="font-size:15px;margin:20px 0 10px">⏳ Скоро / в игре · ликвидные Bo3 <span style="font-size:12px;color:#8fa0b2;font-weight:400">(глубина основного стакана · время киевское)</span></h2>
   <div id="tnwatch"><span class="nolive">—</span></div>
+</div>
+
+<div id="tab-bo5" style="display:none">
+  <div class="tnhead">
+    <h2>🏆 Bo5 · серия-пойнт 2:1</h2>
+    <span id="b5status">—</span>
+    <button onclick="loadBo5()">↻ Обновить</button>
+  </div>
+  <h2 style="font-size:15px;color:#c8aa6e;margin:6px 0 8px">🎮 LoL Bo5 · на 2:1</h2>
+  <div id="b5_lol_ser"><span class="nolive">—</span></div>
+  <div style="font-size:12px;color:#8fa0b2;margin:10px 0 6px">живые LoL Bo5 (караулить до 2:1 · время киевское):</div>
+  <div id="b5_lol_watch"><span class="nolive">—</span></div>
+  <h2 style="font-size:15px;color:#5bd6ff;margin:24px 0 8px">🎾 Теннис Bo5 · на 2:1 <span style="font-size:12px;color:#8fa0b2;font-weight:400">(муж. слэм)</span></h2>
+  <div id="b5_ten_ser"><span class="nolive">—</span></div>
+  <div style="font-size:12px;color:#8fa0b2;margin:10px 0 6px">живые теннис Bo5 (караулить до 2:1 · время киевское):</div>
+  <div id="b5_ten_watch"><span class="nolive">—</span></div>
 </div>
 
 
@@ -1376,11 +1519,64 @@ function switchTab(el){
   const t=el.dataset.tab;
   document.getElementById('tab-esports').style.display = t==='esports'?'':'none';
   const tn=document.getElementById('tab-tennis'); if(tn) tn.style.display = t==='tennis'?'':'none';
+  const b5=document.getElementById('tab-bo5'); if(b5) b5.style.display = t==='bo5'?'':'none';
   if(t==='tennis'){ loadTennis(); if(!tnTimer) tnTimer=setInterval(loadTennis,45000); }
   else if(tnTimer){ clearInterval(tnTimer); tnTimer=null; }
+  if(t==='bo5'){ loadBo5(); if(!b5Timer) b5Timer=setInterval(loadBo5,45000); }
+  else if(b5Timer){ clearInterval(b5Timer); b5Timer=null; }
 }
-let tnTimer=null;
+let tnTimer=null, b5Timer=null;
+async function loadBo5(){
+  const st=document.getElementById('b5status'); if(st)st.textContent='загрузка…';
+  try{
+    const r=await fetch('/bo5'); const d=await r.json();
+    renderBo5(d.series||[]); renderBo5watch(d.watch||[]);
+    const tm=new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
+    if(st)st.textContent=(d.series?d.series.length:0)+' на 2:1 · '+((d.watch||[]).length)+' живых · '+tm+(d.error?(' · ошибка: '+d.error):'');
+  }catch(e){ if(st)st.textContent='ошибка загрузки'; }
+}
+function renderBo5(ms){
+  const zc={green:'#34d399',yellow:'#e8b84a',red:'#f0556b'}, zt={green:'ЗЕЛЁНАЯ',yellow:'ЖЁЛТАЯ',red:'КРАСНАЯ'};
+  const wl=s=>escapeHtml((String(s||'').split(' ').pop())||String(s||''));
+  function row(m){
+    const z=zc[m.zone]||'#888';
+    const ec=(m.edge==null)?'#8fa0b2':(m.edge>=10?'#34d399':(m.edge>=0?'#e8b84a':'#f0556b'));
+    const nb=(m.t2m==null)?'—':(m.t2m+'¢');
+    const ed=(m.edge==null)?'—':((m.edge>=0?'+':'')+m.edge+'¢');
+    return '<div class="tnrow" style="border-left:4px solid '+z+'">'
+      +'<div class="tnr1"><span class="tntour">'+escapeHtml(m.tour)+' · <b style="color:'+z+'">'+m.sc+'</b></span>'
+      +'<span class="tnzone" style="color:'+z+';border:1px solid '+z+'66">'+(zt[m.zone]||'')+' '+m.t1s+'¢</span>'
+      +_links(m.leader,m.trailer,m.url)+'</div>'
+      +'<div class="tnr2"><b>'+escapeHtml(m.leader)+'</b> ведёт '+m.sc+' · трейлер <b>'+escapeHtml(m.trailer)+'</b></div>'
+      +'<div class="tnr3"><span>Нога A: серия '+wl(m.leader)+' по <b>'+m.t1s+'¢</b> → при 2:2 продать ≈'+m.forecast+'¢</span>'
+      +'<span>Нога B: '+wl(m.trailer)+' берёт след. ед. по <b>'+nb+'</b></span></div>'
+      +'<div class="tnr4"><span style="color:'+ec+'">EDGE ≈ '+ed+'</span>'+_volSpan(m.vol)+_liqSpan(m.depth)+'</div>'
+      +'</div>';
+  }
+  const lb=document.getElementById('b5_lol_ser'), tb=document.getElementById('b5_ten_ser');
+  const lol=ms.filter(m=>m.sport==='lol'), ten=ms.filter(m=>m.sport==='tennis');
+  if(lb) lb.innerHTML = lol.length? lol.map(row).join('') : '<span class="nolive">Нет LoL на 2:1 сейчас</span>';
+  if(tb) tb.innerHTML = ten.length? ten.map(row).join('') : '<span class="nolive">Нет тенниса на 2:1 сейчас</span>';
+}
+function renderBo5watch(ms){
+  function row(m){
+    const hrs=m.start?('старт '+m.start):'';
+    return '<div class="tnrow">'
+      +'<div class="tnr1"><span class="tntour">'+escapeHtml(m.tour)+' · <b>'+m.sc+'</b></span>'
+      +(hrs?'<span style="font-size:12px;color:#8fa0b2">'+hrs+'</span>':'')
+      +_links(m.fav,'',m.url)+'</div>'
+      +'<div class="tnr2">фаворит <b>'+escapeHtml(m.fav)+'</b> '+m.favpx+'¢</div>'
+      +'<div class="tnr4">'+_volSpan(m.vol)+_liqSpan(m.depth)+'</div>'
+      +'</div>';
+  }
+  const lb=document.getElementById('b5_lol_watch'), tb=document.getElementById('b5_ten_watch');
+  const lol=ms.filter(m=>m.sport==='lol'), ten=ms.filter(m=>m.sport==='tennis');
+  if(lb) lb.innerHTML = lol.length? lol.map(row).join('') : '<span class="nolive">Нет живых LoL Bo5</span>';
+  if(tb) tb.innerHTML = ten.length? ten.map(row).join('') : '<span class="nolive">Нет живых теннис Bo5</span>';
+}
 function _dep(v){return v==null?'—':('$'+(v>=1000?(v/1000).toFixed(1)+'k':v));}
+function _volk(v){v=v||0;return '$'+(v>=1000?(v/1000).toFixed(0)+'k':v);}
+function _volSpan(v){return '<span style="color:#8fa0b2">оборот '+_volk(v)+'</span>';}
 function _liqSpan(v){var ok=(v||0)>=2000;return '<span style="color:'+(v==null?'#8fa0b2':(ok?'#34d399':'#f0556b'))+'">стакан матча: '+_dep(v)+(v==null?'':(ok?' ✓ ликвидно':' ⚠ тонко'))+'</span>';}
 function _links(a,b,url){
   var q=encodeURIComponent((a||'')+' '+(b||''));
