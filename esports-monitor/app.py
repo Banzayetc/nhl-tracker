@@ -1382,6 +1382,13 @@ function switchTab(el){
 let tnTimer=null;
 function _dep(v){return v==null?'—':('$'+(v>=1000?(v/1000).toFixed(1)+'k':v));}
 function _liqSpan(v){var ok=(v||0)>=2000;return '<span style="color:'+(v==null?'#8fa0b2':(ok?'#34d399':'#f0556b'))+'">стакан матча: '+_dep(v)+(v==null?'':(ok?' ✓ ликвидно':' ⚠ тонко'))+'</span>';}
+function _links(a,b,url){
+  var q=encodeURIComponent((a||'')+' '+(b||''));
+  return '<span style="margin-left:auto;display:inline-flex;gap:12px;flex-wrap:wrap">'
+    +'<a class="tnlink" style="margin:0;color:#e8b84a" href="https://www.sofascore.com/search?q='+q+'" target="_blank">📊 SofaScore</a>'
+    +'<a class="tnlink" style="margin:0;color:#e8b84a" href="https://www.flashscore.com/search/?q='+q+'" target="_blank">Flashscore</a>'
+    +'<a class="tnlink" style="margin:0" href="'+url+'" target="_blank">↗ Polymarket</a></span>';
+}
 async function loadTennis(){
   const st=document.getElementById('tnstatus'); if(st)st.textContent='загрузка…';
   try{
@@ -1403,7 +1410,7 @@ function renderBreaks(ms){
     return '<div class="tnrow" style="border-left:4px solid '+z+'">'
       +'<div class="tnr1"><span class="tntour">'+escapeHtml(m.tour)+' '+g+'</span>'
       +'<span class="tnzone" style="color:'+z+';border:1px solid '+z+'66">'+(zt[m.zone]||'')+' '+m.t1s+'¢</span>'
-      +'<a class="tnlink" href="'+m.url+'" target="_blank">↗ Polymarket</a></div>'
+      +_links(m.winner,m.loser,m.url)+'</div>'
       +'<div class="tnr2"><b>'+escapeHtml(m.winner)+'</b> взял сет 1 · соперник <b>'+escapeHtml(m.loser)+'</b></div>'
       +'<div class="tnr3"><span>Нога A: матч '+wl(m.winner)+' по <b>'+m.t1s+'¢</b> → при 1:1 продать ≈'+m.forecast+'¢</span>'
       +'<span>Нога B: Set 2 '+wl(m.loser)+' по <b>'+m.t2m+'¢</b></span></div>'
@@ -1422,7 +1429,7 @@ function renderWatch(ms){
     return '<div class="tnrow">'
       +'<div class="tnr1"><span class="tntour">'+escapeHtml(m.tour)+' '+g+'</span>'
       +(hrs?'<span style="font-size:12px;color:#8fa0b2">'+hrs+'</span>':'')
-      +'<a class="tnlink" href="'+m.url+'" target="_blank">↗ Polymarket</a></div>'
+      +_links(m.p1,m.p2,m.url)+'</div>'
       +'<div class="tnr2">'+escapeHtml(m.p1)+' vs '+escapeHtml(m.p2)+' · фаворит <b>'+escapeHtml(m.fav)+'</b> '+m.fav_px+'¢</div>'
       +'<div class="tnr4"><span style="color:#8fa0b2">оборот '+volk+'</span>'+_liqSpan(m.depth)+'</div>'
       +'</div>';
