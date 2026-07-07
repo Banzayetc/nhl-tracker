@@ -815,12 +815,21 @@ def _book_depth_usd(token, within=0.12, timeout=8):
     return round(sum(p * s for p, s in pr if p <= best + within))
 
 def scan_tennis():
-    url = ("https://gamma-api.polymarket.com/events?tag_slug=tennis"
-           "&closed=false&limit=300&order=startDate&ascending=false")
+    # gamma отдаёт максимум 100/запрос; живых теннис-событий больше (ITF+слэмы),
+    # сортировка по startDate прячет идущие сейчас матчи → пагинируем и дедупим.
+    base = ("https://gamma-api.polymarket.com/events?tag_slug=tennis"
+            "&closed=false&limit=100&order=startDate&ascending=false")
+    _sev = {}
     try:
-        ev = http_get_json(url) or []
+        for off in range(0, 800, 100):
+            page = http_get_json(base + ("&offset=%d" % off)) or []
+            for x in page:
+                _sev[x.get("id")] = x
+            if len(page) < 100:
+                break
     except Exception as e:
         return {"matches": [], "error": str(e)}
+    ev = list(_sev.values())
 
     def _pr(m):
         try:
@@ -945,10 +954,10 @@ def scan_tennis():
             })
     zrank = {"green": 0, "yellow": 1, "red": 2}
     breaks.sort(key=lambda x: (zrank.get(x["zone"], 3), -(x["depth"] or 0), -x["edge"]))
-    # watchlist: топ по обороту, для топ-15 подтягиваем глубину основного стакана
-    # сортировка по ВРЕМЕНИ НАЧАЛА (ближайшие/идущие сверху), затем глубину стакана для показанных
-    watch.sort(key=lambda x: (x["_st"] if x["_st"] is not None else 9e18))
-    watch = watch[:20]
+    # watchlist: сортировка по ЛИКВИДНОСТИ (оборот) — крупные сверху (иначе ITF топит);
+    # время старта показываем в каждой строке. Топ-22.
+    watch.sort(key=lambda x: -(x.get("vol") or 0))
+    watch = watch[:22]
     for w in watch:
         tk = w.pop("_favtk", None)
         w["depth"] = _book_depth_usd(tk) if tk else None
@@ -975,12 +984,21 @@ def _scan_bo5_sport(sport):
     import time as _t
     cfg=_BO5_CFG[sport]; now=_t.time()
     ure=re.compile(cfg["unit"]+r" (\d) Winner")
-    url=("https://gamma-api.polymarket.com/events?tag_slug=%s&closed=false"
-         "&limit=300&order=startDate&ascending=false" % cfg["tag"])
-    try:
-        ev=http_get_json(url) or []
-    except Exception:
-        return [], []
+    # gamma отдаёт максимум 100/запрос; живых событий больше, а сортировка по startDate
+    # прячет идущие сейчас матчи (старая дата) → пагинируем и дедупим.
+    base=("https://gamma-api.polymarket.com/events?tag_slug=%s&closed=false"
+          "&limit=100&order=startDate&ascending=false" % cfg["tag"])
+    seen_ev={}
+    for off in range(0, 800, 100):
+        try:
+            page=http_get_json(base + ("&offset=%d" % off)) or []
+        except Exception:
+            break
+        for x in page:
+            seen_ev[x.get("id")] = x
+        if len(page) < 100:
+            break
+    ev=list(seen_ev.values())
     def _pr(m):
         try: return [float(x) for x in json.loads(m.get("outcomePrices") or "[]")]
         except Exception: return []
