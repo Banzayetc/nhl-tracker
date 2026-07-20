@@ -66,19 +66,20 @@ def _pm_fetch(url, timeout=15):
     except Exception as e:
         return {"_err": str(e)}
 
-def _best_ask(tok, timeout=8):
-    """Лучший аск (цена ПОКУПКИ) из стакана CLOB. Для тонких рынков (карта 2)
-    аск сильно выше мида — обе ноги стратегии это ПОКУПКА, поэтому нужен аск."""
+def _book_top(tok, timeout=8):
+    """(лучший бид, лучший аск) из стакана CLOB.
+    Мейкер покупает по БИДУ (лимитка), тейкер — по АСКУ. Отдаём оба, тумблер выбирает."""
     if not tok:
-        return None
+        return (None, None)
     b = _pm_fetch("https://clob.polymarket.com/book?token_id=" + str(tok), timeout=timeout)
     if not isinstance(b, dict):
-        return None
+        return (None, None)
     try:
-        prices = [float(x["price"]) for x in (b.get("asks") or [])]
-        return min(prices) if prices else None      # лучший аск = минимальная цена продажи
+        asks = [float(x["price"]) for x in (b.get("asks") or [])]
+        bids = [float(x["price"]) for x in (b.get("bids") or [])]
+        return (max(bids) if bids else None, min(asks) if asks else None)  # (лучший бид, лучший аск)
     except Exception:
-        return None
+        return (None, None)
 
 # Глобальное состояние (общий доступ из потоков)
 STATE = {
@@ -300,19 +301,26 @@ def cs2feed(pm_url):
         if src:
             t1name, t2name = src[0][0], src[0][1]
 
-    # ЦЕНЫ = АСК (цена покупки) из CLOB-стакана; мид как фолбэк (обе ноги — покупка).
-    def buy_px(entry, i):
+    # ЦЕНЫ из CLOB-стакана: и БИД (мейкер), и АСК (тейкер). Мид как фолбэк.
+    def tops(entry):                                 # стакан по обоим токенам (1 запрос/токен)
         outs, pv, tk = entry
-        a = _best_ask(tk[i]) if (tk and len(tk) > i and tk[i]) else None
-        return round((a if a is not None else pv[i]) * 100, 1)
+        return [(_book_top(tk[i]) if (tk and len(tk) > i and tk[i]) else (None, None)) for i in range(2)]
+    def px(entry, tp, i, side):
+        outs, pv, tk = entry
+        bid, ask = tp[i]
+        v = ask if side == "ask" else bid
+        return round((v if v is not None else pv[i]) * 100, 1)
 
-    prices = {}
-    if series:
-        prices["t1_series"] = buy_px(series, 0)
-        prices["t2_series"] = buy_px(series, 1)
-    if map2:
-        prices["t1_map2"] = buy_px(map2, 0)
-        prices["t2_map2"] = buy_px(map2, 1)
+    sTop = tops(series) if series else None
+    mTop = tops(map2) if map2 else None
+    prices = {"ask": {}, "bid": {}}
+    for side in ("ask", "bid"):
+        if series:
+            prices[side]["t1_series"] = px(series, sTop, 0, side)
+            prices[side]["t2_series"] = px(series, sTop, 1, side)
+        if map2:
+            prices[side]["t1_map2"] = px(map2, mTop, 0, side)
+            prices[side]["t2_map2"] = px(map2, mTop, 1, side)
     map1st = None
     if map1:
         mx = max(map1[1])                       # резолв карты 1 — по миду ок
