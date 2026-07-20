@@ -81,6 +81,18 @@ def _book_top(tok, timeout=8):
     except Exception:
         return (None, None)
 
+def _prematch_px(tok, timeout=8):
+    """Пред-матчевая цена outcome = медиана ПЕРВЫХ тиков истории (цена на открытии рынка,
+    до карты 1). Устойчиво к одиночному стартовому шуму."""
+    if not tok:
+        return None
+    h = _pm_fetch("https://clob.polymarket.com/prices-history?market=" + str(tok) + "&interval=max&fidelity=10", timeout=timeout)
+    hist = h.get("history") if isinstance(h, dict) else None
+    if not hist:
+        return None
+    ps = sorted(float(x["p"]) for x in hist[:6] if "p" in x)
+    return ps[len(ps) // 2] if ps else None      # медиана первых тиков
+
 # Глобальное состояние (общий доступ из потоков)
 STATE = {
     "running": False,
@@ -256,10 +268,11 @@ def pm_volume(t1, t2, tag):
             return vol, title, ev.get("slug") or ""
     return None, None, None
 
-def cs2feed(pm_url):
+def cs2feed(pm_url, light=False):
     """Фид для калькулятора Δ-neutral: по ссылке/слугу Polymarket CS2-матча отдаёт
     цены (серия/карта2 обеих команд, статус карты1) + живое состояние карт с bo3.gg
-    (счёт серии, номер карты, идёт/перерыв, кто взял К1). Всё через уже готовые хелперы."""
+    (счёт серии, номер карты, идёт/перерыв, кто взял К1). Всё через уже готовые хелперы.
+    light=True — только состояние карт (для автоопроса), без запросов стакана (быстро)."""
     slug = (pm_url or "").strip().rstrip("/").split("/")[-1].split("?")[0]
     if not slug:
         return {"_err": "no slug"}
@@ -311,16 +324,17 @@ def cs2feed(pm_url):
         v = ask if side == "ask" else bid
         return round((v if v is not None else pv[i]) * 100, 1)
 
-    sTop = tops(series) if series else None
-    mTop = tops(map2) if map2 else None
     prices = {"ask": {}, "bid": {}}
-    for side in ("ask", "bid"):
-        if series:
-            prices[side]["t1_series"] = px(series, sTop, 0, side)
-            prices[side]["t2_series"] = px(series, sTop, 1, side)
-        if map2:
-            prices[side]["t1_map2"] = px(map2, mTop, 0, side)
-            prices[side]["t2_map2"] = px(map2, mTop, 1, side)
+    if not light:                                    # автоопрос (light) не дёргает стакан
+        sTop = tops(series) if series else None
+        mTop = tops(map2) if map2 else None
+        for side in ("ask", "bid"):
+            if series:
+                prices[side]["t1_series"] = px(series, sTop, 0, side)
+                prices[side]["t2_series"] = px(series, sTop, 1, side)
+            if map2:
+                prices[side]["t1_map2"] = px(map2, mTop, 0, side)
+                prices[side]["t2_map2"] = px(map2, mTop, 1, side)
     map1st = None
     if map1:
         mx = max(map1[1])                       # резолв карты 1 — по миду ок
@@ -361,8 +375,18 @@ def cs2feed(pm_url):
     except Exception as e:
         bo3 = {"matched": False, "_err": str(e)}
 
+    prematch = {}                                    # пред-матчевая цена серии (для контекст-полей)
+    if not light and series:
+        stk = series[2]
+        if stk and len(stk) >= 2:
+            a = _prematch_px(stk[0]); b = _prematch_px(stk[1])
+            if a is not None:
+                prematch["t1"] = round(a * 100, 1)
+            if b is not None:
+                prematch["t2"] = round(b * 100, 1)
+
     return {"slug": slug, "t1name": t1name, "t2name": t2name,
-            "prices": prices, "map1": map1st, "bo3": bo3}
+            "prices": prices, "prematch": prematch, "map1": map1st, "bo3": bo3}
 
 def vol_label(vol, game):
     th = VOL_THRESHOLDS[game]
@@ -682,8 +706,9 @@ class Handler(BaseHTTPRequestHandler):
             if not u:
                 self._send(400, "application/json", '{"_err":"missing u"}')
                 return
+            light = (q.get("maps", [""])[0] == "1")   # &maps=1 → только карты (автоопрос), без стакана
             try:
-                payload = cs2feed(u)
+                payload = cs2feed(u, light=light)
             except Exception as e:
                 payload = {"_err": str(e)}
             self._send(200, "application/json", json.dumps(payload, ensure_ascii=False))
