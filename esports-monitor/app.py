@@ -359,8 +359,12 @@ def cs2feed(pm_url, light=False):
             else:
                 pm_s1, pm_s2 = s2, s1                     # реверс
             lu = lm.get("live_updates") or {}
+            # победитель К1: ПРИОРИТЕТ — резолв Polymarket Map 1 Winner (надёжно;
+            # счёт bo3 может быть перевёрнут из-за расхождения порядка команд слуг/live_updates).
             k1w = None
-            if pm_s1 + pm_s2 >= 1:
+            if map1st and map1st.get("resolved") and map1st.get("winner"):
+                k1w = map1st["winner"]
+            elif pm_s1 + pm_s2 >= 1:
                 k1w = t1name if pm_s1 > pm_s2 else t2name
             bo3 = {
                 "matched": True,
