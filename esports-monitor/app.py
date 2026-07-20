@@ -366,9 +366,13 @@ def cs2feed(pm_url, light=False):
                 k1w = map1st["winner"]
             elif pm_s1 + pm_s2 >= 1:
                 k1w = t1name if pm_s1 > pm_s2 else t2name
+            # выправляем ориентацию счёта при 1:0 по победителю К1 (счёт bo3 бывает зеркальным)
+            score = [pm_s1, pm_s2]
+            if k1w and (pm_s1 + pm_s2) == 1:
+                score = [1, 0] if k1w == t1name else ([0, 1] if k1w == t2name else score)
             bo3 = {
                 "matched": True,
-                "score": [pm_s1, pm_s2],                  # серия в порядке t1:t2
+                "score": score,                           # серия в порядке t1:t2 (выправлено по К1)
                 "game_number": int(lu.get("game_number") or 0),
                 "game_ended": bool(lu.get("game_ended")),
                 "maps_score": lm.get("maps_score"),
