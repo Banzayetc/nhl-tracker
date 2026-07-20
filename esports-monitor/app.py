@@ -66,6 +66,20 @@ def _pm_fetch(url, timeout=15):
     except Exception as e:
         return {"_err": str(e)}
 
+def _best_ask(tok, timeout=8):
+    """Лучший аск (цена ПОКУПКИ) из стакана CLOB. Для тонких рынков (карта 2)
+    аск сильно выше мида — обе ноги стратегии это ПОКУПКА, поэтому нужен аск."""
+    if not tok:
+        return None
+    b = _pm_fetch("https://clob.polymarket.com/book?token_id=" + str(tok), timeout=timeout)
+    if not isinstance(b, dict):
+        return None
+    try:
+        prices = [float(x["price"]) for x in (b.get("asks") or [])]
+        return min(prices) if prices else None      # лучший аск = минимальная цена продажи
+    except Exception:
+        return None
+
 # Глобальное состояние (общий доступ из потоков)
 STATE = {
     "running": False,
@@ -258,42 +272,50 @@ def cs2feed(pm_url):
     def pair(m):
         try:
             outs = m.get("outcomes"); pv = m.get("outcomePrices")
+            tk = m.get("clobTokenIds")
             outs = json.loads(outs) if isinstance(outs, str) else outs
             pv = [float(x) for x in (json.loads(pv) if isinstance(pv, str) else pv)]
-            return outs, pv
+            tk = json.loads(tk) if isinstance(tk, str) else (tk or [])
+            return outs, pv, tk
         except Exception:
-            return None, None
+            return None, None, None
 
-    series = map1 = map2 = None
+    series = map1 = map2 = None      # каждый: (outs, pv_mid, toks)
     t1name = t2name = None
     for m in markets:
         q = (m.get("question") or "").lower()
-        outs, pv = pair(m)
+        outs, pv, tk = pair(m)
         if not outs or len(outs) < 2 or not pv:
             continue
         # ВАЖНО: у матча есть Map-Handicap/Map-Total-Rounds рынки — берём ТОЛЬКО «Map N Winner».
         junk = ("handicap" in q) or ("total" in q) or ("rounds" in q) or ("over/under" in q)
         if ("map 1" in q or "game 1" in q) and "winner" in q and not junk:   # CS2=Map, Dota/LoL=Game
-            map1 = (outs, pv)
+            map1 = (outs, pv, tk)
         elif ("map 2" in q or "game 2" in q) and "winner" in q and not junk:
-            map2 = (outs, pv)
+            map2 = (outs, pv, tk)
         elif ("(bo3)" in q or "(bo5)" in q or "match winner" in q) and not junk and "map" not in q and "game" not in q:
-            series = (outs, pv); t1name, t2name = outs[0], outs[1]
+            series = (outs, pv, tk); t1name, t2name = outs[0], outs[1]
     if not t1name:
         src = series or map2 or map1
         if src:
             t1name, t2name = src[0][0], src[0][1]
 
+    # ЦЕНЫ = АСК (цена покупки) из CLOB-стакана; мид как фолбэк (обе ноги — покупка).
+    def buy_px(entry, i):
+        outs, pv, tk = entry
+        a = _best_ask(tk[i]) if (tk and len(tk) > i and tk[i]) else None
+        return round((a if a is not None else pv[i]) * 100, 1)
+
     prices = {}
     if series:
-        prices["t1_series"] = round(series[1][0] * 100, 1)
-        prices["t2_series"] = round(series[1][1] * 100, 1)
+        prices["t1_series"] = buy_px(series, 0)
+        prices["t2_series"] = buy_px(series, 1)
     if map2:
-        prices["t1_map2"] = round(map2[1][0] * 100, 1)
-        prices["t2_map2"] = round(map2[1][1] * 100, 1)
+        prices["t1_map2"] = buy_px(map2, 0)
+        prices["t2_map2"] = buy_px(map2, 1)
     map1st = None
     if map1:
-        mx = max(map1[1])
+        mx = max(map1[1])                       # резолв карты 1 — по миду ок
         map1st = {"resolved": mx > 0.97,
                   "winner": (map1[0][map1[1].index(mx)] if mx > 0.97 else None)}
 
