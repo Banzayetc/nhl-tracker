@@ -241,6 +241,99 @@ def pm_volume(t1, t2, tag):
             return vol, title, ev.get("slug") or ""
     return None, None, None
 
+def cs2feed(pm_url):
+    """Фид для калькулятора Δ-neutral: по ссылке/слугу Polymarket CS2-матча отдаёт
+    цены (серия/карта2 обеих команд, статус карты1) + живое состояние карт с bo3.gg
+    (счёт серии, номер карты, идёт/перерыв, кто взял К1). Всё через уже готовые хелперы."""
+    slug = (pm_url or "").strip().rstrip("/").split("/")[-1].split("?")[0]
+    if not slug:
+        return {"_err": "no slug"}
+    ev = _pm_fetch("https://gamma-api.polymarket.com/events?slug=" + urllib.parse.quote(slug))
+    if isinstance(ev, list):
+        ev = ev[0] if ev else {}
+    if not isinstance(ev, dict) or ev.get("_err"):
+        return {"_err": "polymarket event not found", "slug": slug}
+    markets = ev.get("markets", []) or []
+
+    def pair(m):
+        try:
+            outs = m.get("outcomes"); pv = m.get("outcomePrices")
+            outs = json.loads(outs) if isinstance(outs, str) else outs
+            pv = [float(x) for x in (json.loads(pv) if isinstance(pv, str) else pv)]
+            return outs, pv
+        except Exception:
+            return None, None
+
+    series = map1 = map2 = None
+    t1name = t2name = None
+    for m in markets:
+        q = (m.get("question") or "").lower()
+        outs, pv = pair(m)
+        if not outs or len(outs) < 2 or not pv:
+            continue
+        # ВАЖНО: у матча есть Map-Handicap/Map-Total-Rounds рынки — берём ТОЛЬКО «Map N Winner».
+        junk = ("handicap" in q) or ("total" in q) or ("rounds" in q) or ("over/under" in q)
+        if ("map 1" in q or "game 1" in q) and "winner" in q and not junk:   # CS2=Map, Dota/LoL=Game
+            map1 = (outs, pv)
+        elif ("map 2" in q or "game 2" in q) and "winner" in q and not junk:
+            map2 = (outs, pv)
+        elif ("(bo3)" in q or "(bo5)" in q or "match winner" in q) and not junk and "map" not in q and "game" not in q:
+            series = (outs, pv); t1name, t2name = outs[0], outs[1]
+    if not t1name:
+        src = series or map2 or map1
+        if src:
+            t1name, t2name = src[0][0], src[0][1]
+
+    prices = {}
+    if series:
+        prices["t1_series"] = round(series[1][0] * 100, 1)
+        prices["t2_series"] = round(series[1][1] * 100, 1)
+    if map2:
+        prices["t1_map2"] = round(map2[1][0] * 100, 1)
+        prices["t2_map2"] = round(map2[1][1] * 100, 1)
+    map1st = None
+    if map1:
+        mx = max(map1[1])
+        map1st = {"resolved": mx > 0.97,
+                  "winner": (map1[0][map1[1].index(mx)] if mx > 0.97 else None)}
+
+    bo3 = {"matched": False}
+    try:
+        for lm in fetch_live(1):
+            if lm.get("bo_type") != 3:
+                continue
+            b1, b2 = parse_slug(lm.get("slug", ""))
+            if not (b1 and b2 and t1name and t2name):
+                continue
+            ok = (_name_match(b1, t1name) and _name_match(b2, t2name)) or \
+                 (_name_match(b1, t2name) and _name_match(b2, t1name))
+            if not ok:
+                continue
+            s1, s2 = get_score(lm)                       # в порядке bo3 (b1,b2)
+            if _name_match(b1, t1name):
+                pm_s1, pm_s2 = s1, s2                     # b1 = наша t1
+            else:
+                pm_s1, pm_s2 = s2, s1                     # реверс
+            lu = lm.get("live_updates") or {}
+            k1w = None
+            if pm_s1 + pm_s2 >= 1:
+                k1w = t1name if pm_s1 > pm_s2 else t2name
+            bo3 = {
+                "matched": True,
+                "score": [pm_s1, pm_s2],                  # серия в порядке t1:t2
+                "game_number": int(lu.get("game_number") or 0),
+                "game_ended": bool(lu.get("game_ended")),
+                "maps_score": lm.get("maps_score"),
+                "map1_winner": k1w,
+                "bo3_slug": lm.get("slug", ""),
+            }
+            break
+    except Exception as e:
+        bo3 = {"matched": False, "_err": str(e)}
+
+    return {"slug": slug, "t1name": t1name, "t2name": t2name,
+            "prices": prices, "map1": map1st, "bo3": bo3}
+
 def vol_label(vol, game):
     th = VOL_THRESHOLDS[game]
     if vol is None:
@@ -549,6 +642,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, "application/json", '{"_err":"missing u"}')
                 return
             payload = _pm_fetch(u)
+            self._send(200, "application/json", json.dumps(payload, ensure_ascii=False))
+        elif self.path.startswith("/cs2feed"):
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if (q.get("k", [""])[0]) != PM_PROXY_KEY:
+                self._send(403, "application/json", '{"_err":"forbidden"}')
+                return
+            u = q.get("u", [""])[0]
+            if not u:
+                self._send(400, "application/json", '{"_err":"missing u"}')
+                return
+            try:
+                payload = cs2feed(u)
+            except Exception as e:
+                payload = {"_err": str(e)}
             self._send(200, "application/json", json.dumps(payload, ensure_ascii=False))
         elif self.path.startswith("/weather"):
             try:
