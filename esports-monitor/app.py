@@ -338,11 +338,15 @@ def cs2feed(pm_url, light=False, game="cs2"):
             if map2:
                 prices[side]["t1_map2"] = px(map2, mTop, 0, side)
                 prices[side]["t2_map2"] = px(map2, mTop, 1, side)
-    map1st = None
-    if map1:
-        mx = max(map1[1])                       # резолв карты 1 — по миду ок
-        map1st = {"resolved": mx > 0.97,
-                  "winner": (map1[0][map1[1].index(mx)] if mx > 0.97 else None)}
+    def _resolve(mkt):                          # резолв рынка Winner по миду (>0.97): карта/серия закрыта.
+        if not mkt:                             # НАДЁЖНО и НЕ пропадает после конца матча (в отличие от bo3.gg,
+            return None                         # который выкидывает завершённую серию из status=current).
+        mx = max(mkt[1])
+        return {"resolved": mx > 0.97,
+                "winner": (mkt[0][mkt[1].index(mx)] if mx > 0.97 else None)}
+    map1st   = _resolve(map1)                   # доступны и в light-режиме (миды парсятся до проверки light)
+    map2st   = _resolve(map2)
+    seriesst = _resolve(series)
 
     bo3 = {"matched": False}
     try:
@@ -397,7 +401,8 @@ def cs2feed(pm_url, light=False, game="cs2"):
                 prematch["t2"] = round(b * 100, 1)
 
     return {"slug": slug, "t1name": t1name, "t2name": t2name,
-            "prices": prices, "prematch": prematch, "map1": map1st, "bo3": bo3}
+            "prices": prices, "prematch": prematch,
+            "map1": map1st, "map2": map2st, "series": seriesst, "bo3": bo3}
 
 def vol_label(vol, game):
     th = VOL_THRESHOLDS[game]
