@@ -81,17 +81,35 @@ def _book_top(tok, timeout=8):
     except Exception:
         return (None, None)
 
-def _prematch_px(tok, timeout=8):
-    """Пред-матчевая цена outcome = медиана ПЕРВЫХ тиков истории (цена на открытии рынка,
-    до карты 1). Устойчиво к одиночному стартовому шуму."""
+def _gst_ts(s):
+    """gameStartTime ('2026-07-21 15:35:00+00' или ISO с Z) → unix ts; None если не разобрать."""
+    if not s:
+        return None
+    s = str(s).strip().replace(" ", "T")
+    if s.endswith("+00"):
+        s += ":00"                               # '+00' → '+00:00' (иначе fromisoformat падает на <3.11)
+    s = s.replace("Z", "+00:00")
+    try:
+        return int(datetime.fromisoformat(s).timestamp())
+    except Exception:
+        return None
+
+def _prematch_px(tok, gst=None, timeout=8):
+    """Пред-матчевая цена outcome = ПРЕД-ИГРОВАЯ ЛИНИЯ: цена последнего тика с t <= gameStartTime
+    (устоявшийся рынок перед матчем — консистентно с тем, как fml собран в базе). Фолбэк
+    (нет gst или нет тиков до старта) — медиана первых 6 тиков (цена открытия)."""
     if not tok:
         return None
     h = _pm_fetch("https://clob.polymarket.com/prices-history?market=" + str(tok) + "&interval=max&fidelity=10", timeout=timeout)
     hist = h.get("history") if isinstance(h, dict) else None
     if not hist:
         return None
+    if gst:
+        pre = [(int(x["t"]), float(x["p"])) for x in hist if "p" in x and "t" in x and int(x["t"]) <= gst]
+        if pre:
+            return max(pre, key=lambda z: z[0])[1]   # пред-игровая линия (последний тик до старта матча)
     ps = sorted(float(x["p"]) for x in hist[:6] if "p" in x)
-    return ps[len(ps) // 2] if ps else None      # медиана первых тиков
+    return ps[len(ps) // 2] if ps else None          # фолбэк: цена открытия
 
 # Глобальное состояние (общий доступ из потоков)
 STATE = {
@@ -298,6 +316,7 @@ def cs2feed(pm_url, light=False, game="cs2"):
             return None, None, None
 
     series = map1 = map2 = None      # каждый: (outs, pv_mid, toks)
+    series_gst = None                # gameStartTime серия-рынка → пред-игровая линия прематча
     t1name = t2name = None
     for m in markets:
         q = (m.get("question") or "").lower()
@@ -312,6 +331,7 @@ def cs2feed(pm_url, light=False, game="cs2"):
             map2 = (outs, pv, tk)
         elif ("(bo3)" in q or "(bo5)" in q or "match winner" in q) and not junk and "map" not in q and "game" not in q:
             series = (outs, pv, tk); t1name, t2name = outs[0], outs[1]
+            series_gst = m.get("gameStartTime")
     if not t1name:
         src = series or map2 or map1
         if src:
@@ -394,7 +414,8 @@ def cs2feed(pm_url, light=False, game="cs2"):
     if not light and series:
         stk = series[2]
         if stk and len(stk) >= 2:
-            a = _prematch_px(stk[0]); b = _prematch_px(stk[1])
+            gst = _gst_ts(series_gst)                # пред-игровая линия — по времени старта матча
+            a = _prematch_px(stk[0], gst); b = _prematch_px(stk[1], gst)
             if a is not None:
                 prematch["t1"] = round(a * 100, 1)
             if b is not None:
