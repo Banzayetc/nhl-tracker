@@ -268,11 +268,14 @@ def pm_volume(t1, t2, tag):
             return vol, title, ev.get("slug") or ""
     return None, None, None
 
-def cs2feed(pm_url, light=False):
-    """Фид для калькулятора Δ-neutral: по ссылке/слугу Polymarket CS2-матча отдаёт
+def cs2feed(pm_url, light=False, game="cs2"):
+    """Фид для калькулятора Δ-neutral: по ссылке/слугу Polymarket матча отдаёт
     цены (серия/карта2 обеих команд, статус карты1) + живое состояние карт с bo3.gg
     (счёт серии, номер карты, идёт/перерыв, кто взял К1). Всё через уже готовые хелперы.
-    light=True — только состояние карт (для автоопроса), без запросов стакана (быстро)."""
+    light=True — только состояние карт (для автоопроса), без запросов стакана (быстро).
+    game — дисциплина bo3.gg для лайв-трекинга: cs2 (по умолч.) / dota2 / valorant.
+    Рынки Polymarket парсятся game-agnostic (Map N Winner для CS2, Game N Winner для Dota)."""
+    disc_id = DISCIPLINES.get(game, DISCIPLINES["cs2"])["id"]
     slug = (pm_url or "").strip().rstrip("/").split("/")[-1].split("?")[0]
     if not slug:
         return {"_err": "no slug"}
@@ -343,7 +346,7 @@ def cs2feed(pm_url, light=False):
 
     bo3 = {"matched": False}
     try:
-        for lm in fetch_live(1):
+        for lm in fetch_live(disc_id):
             if lm.get("bo_type") != 3:
                 continue
             b1, b2 = parse_slug(lm.get("slug", ""))
@@ -715,8 +718,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, "application/json", '{"_err":"missing u"}')
                 return
             light = (q.get("maps", [""])[0] == "1")   # &maps=1 → только карты (автоопрос), без стакана
+            game = (q.get("game", ["cs2"])[0] or "cs2")   # &game=dota2 → лайв-трекинг по нужной дисциплине bo3.gg
             try:
-                payload = cs2feed(u, light=light)
+                payload = cs2feed(u, light=light, game=game)
             except Exception as e:
                 payload = {"_err": str(e)}
             self._send(200, "application/json", json.dumps(payload, ensure_ascii=False))
