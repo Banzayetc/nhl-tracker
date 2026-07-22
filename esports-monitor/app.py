@@ -329,7 +329,10 @@ def cs2feed(pm_url, light=False, game="cs2"):
             map1 = (outs, pv, tk)
         elif ("map 2" in q or "game 2" in q) and "winner" in q and not junk:
             map2 = (outs, pv, tk)
-        elif ("(bo3)" in q or "(bo5)" in q or "match winner" in q) and not junk and "map" not in q and "game" not in q:
+        elif ("(bo3)" in q or "(bo5)" in q or "match winner" in q) and not junk:
+            # (раньше был guard "map"/"game" not in q — он ЛОЖНО срабатывал на именах команд,
+            #  напр. "GamerLegion" содержит "game" → рынок серии отбрасывался. Карта-winner рынки
+            #  ловятся ветками выше, junk отсекает handicap/total/rounds — этот guard лишний.)
             series = (outs, pv, tk); t1name, t2name = outs[0], outs[1]
             series_gst = m.get("gameStartTime")
     if not t1name:
