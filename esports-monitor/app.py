@@ -421,9 +421,14 @@ def cs2feed(pm_url, light=False, game="cs2"):
             if b is not None:
                 prematch["t2"] = round(b * 100, 1)
 
+    try:
+        _vol = float(ev.get("volume") or 0)
+    except Exception:
+        _vol = 0.0
     return {"slug": slug, "t1name": t1name, "t2name": t2name,
             "prices": prices, "prematch": prematch,
-            "map1": map1st, "map2": map2st, "series": seriesst, "bo3": bo3}
+            "map1": map1st, "map2": map2st, "series": seriesst, "bo3": bo3,
+            "volume": _vol, "gst": series_gst}
 
 def vol_label(vol, game):
     th = VOL_THRESHOLDS[game]
