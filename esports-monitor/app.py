@@ -317,6 +317,7 @@ def cs2feed(pm_url, light=False, game="cs2"):
 
     series = map1 = map2 = None      # каждый: (outs, pv_mid, toks)
     series_gst = None                # gameStartTime серия-рынка → пред-игровая линия прематча
+    gt_mkt = None; hcap_mkts = []    # v5: Games Total (Over) и Map Handicap — эквив. рынки ноги-хеджа
     t1name = t2name = None
     for m in markets:
         q = (m.get("question") or "").lower()
@@ -335,6 +336,10 @@ def cs2feed(pm_url, light=False, game="cs2"):
             #  ловятся ветками выше, junk отсекает handicap/total/rounds — этот guard лишний.)
             series = (outs, pv, tk); t1name, t2name = outs[0], outs[1]
             series_gst = m.get("gameStartTime")
+        elif "games total" in q and "2.5" in q:
+            gt_mkt = (outs, pv, tk)
+        elif "map handicap" in q:
+            hcap_mkts.append((outs, pv, tk))
     if not t1name:
         src = series or map2 or map1
         if src:
@@ -412,6 +417,25 @@ def cs2feed(pm_url, light=False, game="cs2"):
             break
     except Exception as e:
         bo3 = {"matched": False, "_err": str(e)}
+
+    # v5: цены ноги-хеджа на ЭКВИВАЛЕНТНЫХ рынках (Games Total «Over», Map Handicap проигравший «+1.5»)
+    # — для сравнения с Map2 проигравшего и входа по самому дешёвому. Нужен победитель К1 → проигравший.
+    if not light and (map1st or {}).get("winner") and t1name and t2name:
+        _k1w = map1st["winner"]
+        _loser = t2name if _k1w == t1name else t1name
+        def _add_hedge(key, tok, pvf):
+            b, a = _book_top(tok)
+            prices["ask"][key] = round((a if a is not None else pvf) * 100, 1)
+            prices["bid"][key] = round((b if b is not None else pvf) * 100, 1)
+        if gt_mkt:
+            _o, _pv, _tk = gt_mkt
+            _oi = next((i for i, o in enumerate(_o) if "over" in str(o).lower()), None)
+            if _oi is not None and _tk and len(_tk) > _oi and _tk[_oi]:
+                _add_hedge("hedge_gt", _tk[_oi], _pv[_oi])
+        for _o, _pv, _tk in hcap_mkts:                # проигравший «+1.5» = сторона index1 рынка "X(-1.5) vs L(+1.5)"
+            if len(_o) >= 2 and str(_o[1]).strip().lower() == str(_loser).strip().lower() and _tk and len(_tk) > 1 and _tk[1]:
+                _add_hedge("hedge_hcap", _tk[1], _pv[1])
+                break
 
     prematch = {}                                    # пред-матчевая цена серии (для контекст-полей)
     if not light and series:
