@@ -100,8 +100,17 @@ def _prematch_px(tok, gst=None, timeout=8):
     (нет gst или нет тиков до старта) — медиана первых 6 тиков (цена открытия)."""
     if not tok:
         return None
-    h = _pm_fetch("https://clob.polymarket.com/prices-history?market=" + str(tok) + "&interval=max&fidelity=10", timeout=timeout)
-    hist = h.get("history") if isinstance(h, dict) else None
+    base = "https://clob.polymarket.com/prices-history?market=" + str(tok)
+    def _hist(url):
+        h = _pm_fetch(url, timeout=timeout)
+        return h.get("history") if isinstance(h, dict) else None
+    # основной запрос. Фолбэки — только если CLOB вернул пустой history (наблюдалась транзиентная пустота
+    # по interval=max): узкое окно вокруг старта матча (профиль ≤15д, fidelity=30), затем 1w. Без изменения happy-path.
+    hist = _hist(base + "&interval=max&fidelity=10")
+    if not hist and gst:
+        hist = _hist(base + ("&startTs=%d&endTs=%d&fidelity=30" % (int(gst) - 14 * 86400, int(gst) + 3600)))
+    if not hist:
+        hist = _hist(base + "&interval=1w&fidelity=30")
     if not hist:
         return None
     if gst:
