@@ -795,6 +795,12 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 payload = {"_err": str(e)}
             self._send(200, "application/json", json.dumps(payload, ensure_ascii=False))
+        elif self.path.startswith("/feed"):
+            try:
+                payload = scan_feed()
+            except Exception as e:
+                payload = {"matches": [], "count": 0, "error": str(e)}
+            self._send(200, "application/json", json.dumps(payload, ensure_ascii=False))
         elif self.path.startswith("/weather"):
             try:
                 payload = scan_weather()
@@ -1338,653 +1344,284 @@ def scan_bo5():
     for w in watch: w.pop("_st",None)
     return {"series":ser, "watch":watch[:30], "count":len(ser)}
 
+# ── ЛЕНТА живых киберспорт-матчей (CS2 / LoL / Dota2 / Valorant) ─────────────────
+# Единая доска-монитор: Bo3 команда-vs-команда, event volume ≥ $100k, предстоящие +
+# идущие (не завершённые). Источник — Polymarket gamma (events?tag_slug) + CLOB /book,
+# всё через _pm_fetch → локально тестируется через прокси. Никаких прогнозов/эджа —
+# только показ: игра · время старта · глубина стакана · объём (он же задаёт цвет).
+FEED_GAMES = [
+    {"tag": "counter-strike-2",  "label": "CS2"},
+    {"tag": "league-of-legends", "label": "LoL"},
+    {"tag": "dota-2",            "label": "Dota2"},
+    {"tag": "valorant",          "label": "Valorant"},
+]
+FEED_MIN_VOL = 100_000                 # порог агрегатного volume события
+FEED_GRACE   = 4 * 3600                # сек: начавшийся ≤4ч назад ещё «идёт»
+FEED_TTL     = 25                      # сек: серверный кэш скана (не долбить CLOB)
+# маркеры аутрайта/фьючерса/пропа в СЛУГЕ (у слуга матча их нет — там team-team-дата)
+_FEED_OUTRIGHT = ("winner", "qualif", "champion", "winning-region", "-mvp", "season-")
+_FEED_CACHE = {"ts": 0.0, "data": None}
+_UNIT_WIN_RE = re.compile(r"\b(?:map|game)\s*([1-5])\s+winner")
+
+def _feed_vol_zone(vol):
+    # цвет строки по объёму: 100k–200k серый · 200k–500k жёлтый · ≥500k зелёный
+    txt = "$%.0fk" % (vol / 1000.0)
+    if vol >= 500_000:
+        return ("green",  "#1D9E75", txt)
+    if vol >= 200_000:
+        return ("yellow", "#D9A441", txt)
+    return ("gray", "#8893a0", txt)
+
+def _feed_depth(tokens, within=0.12):
+    """$ ликвидности на асках обоих исходов match-winner в пределах within¢ от лучшего
+    аска (сумма по сторонам). Метод тот же, что _book_depth_usd (теннис/bo5), но через
+    _pm_fetch — работает и локально через прокси. None — если стакан вообще не отдался."""
+    total = 0.0
+    got = False
+    for tok in (tokens or [])[:2]:
+        if not tok:
+            continue
+        b = _pm_fetch("https://clob.polymarket.com/book?token_id=" + str(tok))
+        if not isinstance(b, dict):
+            continue
+        try:
+            pr = sorted((float(a["price"]), float(a["size"])) for a in (b.get("asks") or []))
+        except Exception:
+            pr = []
+        if not pr:
+            continue
+        got = True
+        best = pr[0][0]
+        total += sum(p * s for p, s in pr if p <= best + within)
+    return round(total) if got else None
+
+def _feed_when(gst, now):
+    """(метка времени по Киеву, относительная подпись) для старта матча gst (unix)."""
+    try:
+        if KYIV:
+            dt = datetime.fromtimestamp(gst, KYIV)
+            today = datetime.now(KYIV).date()
+        else:
+            dt = datetime.utcfromtimestamp(gst)
+            today = datetime.utcnow().date()
+        label = dt.strftime("%H:%M") if dt.date() == today else dt.strftime("%d.%m %H:%M")
+    except Exception:
+        label = ""
+    d = gst - now
+    if d <= 0:
+        rel = "в игре"
+    elif d < 3600:
+        rel = "через %d мин" % int(round(d / 60.0))
+    else:
+        rel = "через %.1f ч" % (d / 3600.0)
+    return label, rel
+
+def _feed_jlist(m, key):
+    v = m.get(key)
+    try:
+        return json.loads(v) if isinstance(v, str) else (v or [])
+    except Exception:
+        return []
+
+def scan_feed():
+    import time as _t
+    now = _t.time()
+    with LOCK:
+        if _FEED_CACHE["data"] is not None and (now - _FEED_CACHE["ts"]) < FEED_TTL:
+            return _FEED_CACHE["data"]
+
+    matches = []
+    for g in FEED_GAMES:
+        url = ("https://gamma-api.polymarket.com/events?tag_slug=%s&closed=false"
+               "&limit=100&order=volume&ascending=false" % g["tag"])
+        ev = _pm_fetch(url)
+        if not isinstance(ev, list):
+            continue
+        for e in ev:
+            try:
+                vol = float(e.get("volume") or 0)
+            except Exception:
+                vol = 0.0
+            if vol < FEED_MIN_VOL:
+                continue                                # список отсортирован ↓ по объёму
+            title = e.get("title") or ""
+            slug = e.get("slug") or ""
+            low = title.lower()
+            sl = slug.lower()
+            # только матч команда-vs-команда: " vs " в заголовке + слуг без маркеров аутрайта
+            if " vs " not in low:
+                continue
+            if any(k in sl for k in _FEED_OUTRIGHT):
+                continue
+            mks = e.get("markets") or []
+            unit_win = {}                               # N → рынок «Map/Game N Winner»
+            mw = None                                   # рынок серии (match winner)
+            for m in mks:
+                q = (m.get("question") or "")
+                ql = q.lower()
+                if ("handicap" in ql) or ("total" in ql) or ("rounds" in ql) or ("over/under" in ql):
+                    continue                            # проп-рынки (не winner) — мимо
+                um = _UNIT_WIN_RE.search(ql)
+                if um:
+                    unit_win[int(um.group(1))] = m
+                elif (q.strip() == title.strip()) or ("(bo3)" in ql) or ("(bo5)" in ql):
+                    mw = mw or m                        # рынок серии == заголовок / (BOn)
+            # Bo3-детект: есть Map/Game 1 и 2, нет 4/5; иначе Bo1/Bo5 — вон
+            if unit_win.get(4) or unit_win.get(5) or ("(bo5)" in low):
+                continue
+            if not (unit_win.get(1) and unit_win.get(2)):
+                continue
+            if mw is None:
+                continue
+            mo = _feed_jlist(mw, "outcomes")
+            mtk = _feed_jlist(mw, "clobTokenIds")
+            try:
+                mpn = [float(x) for x in _feed_jlist(mw, "outcomePrices")]
+            except Exception:
+                mpn = []
+            if len(mo) < 2 or len(mpn) < 2:
+                continue
+            # время старта — ТОЛЬКО market.gameStartTime (event.startDate = момент создания, врёт)
+            gst = _gst_ts(mw.get("gameStartTime"))
+            if gst is None:
+                cand = [c for c in (_gst_ts(unit_win[i].get("gameStartTime"))
+                                    for i in sorted(unit_win)) if c]
+                gst = min(cand) if cand else None
+            if gst is None:
+                continue
+            resolved = max(mpn) > 0.97
+            # предстоящие + идущие; завершённые/старьё — вон
+            if gst >= now:
+                pass                                    # ещё не начался — показываем
+            elif gst >= now - FEED_GRACE:
+                if resolved:
+                    continue                            # начался и резолвнут = завершён
+            else:
+                continue                                # старый (в closed=false висят майские)
+            zone, color, vtext = _feed_vol_zone(vol)
+            label, rel = _feed_when(gst, now)
+            matches.append({
+                "game": g["label"], "tag": g["tag"],
+                "t1": str(mo[0]), "t2": str(mo[1]),
+                "gst": gst, "start": label, "when": rel,
+                "vol": round(vol), "vol_text": vtext, "zone": zone, "color": color,
+                "depth": _feed_depth(mtk),
+                "url": "https://polymarket.com/event/" + slug,
+            })
+
+    matches.sort(key=lambda x: x["gst"])                # ближайшие сверху
+    out = {"matches": matches, "count": len(matches),
+           "ts": (datetime.now(KYIV).strftime("%H:%M:%S") if KYIV else "")}
+    with LOCK:
+        _FEED_CACHE["ts"] = now
+        _FEED_CACHE["data"] = out
+    return out
+
 PAGE = r"""<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Esports Bo3 Monitor</title>
+<title>Live Esports · Polymarket</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e0e0e0;min-height:100vh;padding:16px}
-h1{font-size:17px;font-weight:600;color:#fff;margin-bottom:16px;display:flex;align-items:center;gap:8px}
-.dot{width:9px;height:9px;border-radius:50%;background:#444;transition:.3s}
-.dot.on{background:#1D9E75;animation:p 1.5s infinite}
-.dot.alert{background:#E24B4A;animation:p .5s infinite}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e0e0e0;min-height:100vh;padding:16px;max-width:1100px;margin:0 auto}
+h1{font-size:18px;font-weight:600;color:#fff;margin-bottom:4px;display:flex;align-items:center;gap:9px}
+.dot{width:9px;height:9px;border-radius:50%;background:#1D9E75;animation:p 1.6s infinite}
 @keyframes p{0%,100%{opacity:1}50%{opacity:.25}}
-.card{background:#1a1d27;border:1px solid #2a2d3a;border-radius:12px;padding:14px;margin-bottom:12px}
-.card h2{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:#555;margin-bottom:10px;font-weight:500}
-label{font-size:12px;color:#888;display:block;margin-bottom:4px}
-.games{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
-.chip{flex:1;min-width:90px;text-align:center;background:#12151f;border:1px solid #2a2d3a;border-radius:8px;padding:9px;font-size:13px;cursor:pointer;user-select:none;transition:.15s}
-.chip.on{background:#11251c;border-color:#1D9E75;color:#7FDDBB}
-.row{display:flex;gap:12px;margin-bottom:12px}
-.row>div{flex:1}
-input,select{width:100%;background:#12151f;border:1px solid #2a2d3a;border-radius:7px;color:#e0e0e0;padding:8px 10px;font-size:13px;outline:none}
-input:focus,select:focus{border-color:#378ADD}
-.btns{display:flex;gap:8px;margin-bottom:12px}
-button{flex:1;padding:11px;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;border:none}
-button:active{opacity:.7}
-.start{background:#1D9E75;color:#fff}
-.stop{background:#3d1a1a;color:#ff6b6b;border:1px solid #5a2020}
-.test{background:#1a1d27;color:#888;border:1px solid #2a2d3a;flex:.5}
-#voicebox{background:#0e1016;border:1px solid #222633;border-radius:9px;padding:9px;margin-bottom:10px;max-height:300px;overflow:auto}
-.vlh{font-size:11px;color:#7FDDBB;font-weight:700;margin-bottom:6px}
-.vpitch{font-size:11px;color:#9fb6c8;margin-bottom:8px;display:flex;align-items:center;gap:6px}
-.vpitch input{flex:1}
-.vrow{display:flex;align-items:center;gap:6px;padding:4px 5px;border-radius:6px;font-size:12px;color:#cfd8e3}
-.vrow.sel{background:#0d2a1e;border:1px solid #1D9E7566}
-.vrow .vn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.vrow .vn i{color:#667;font-style:normal;font-size:10px}
-.vrow button{background:#1a1d27;color:#9fb6c8;border:1px solid #2a2d3a;border-radius:5px;padding:2px 8px;cursor:pointer;font-size:11px}
-.live h2{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:#555;margin-bottom:8px}
-.pill{display:inline-flex;align-items:center;gap:6px;background:#1a1d27;border:1px solid #2a2d3a;border-radius:20px;padding:4px 10px;font-size:12px;color:#888;margin:0 4px 4px 0}
-.pill .g{font-size:10px;color:#555;text-transform:uppercase}
-.pill .sc{font-weight:600;color:#e0e0e0}
-.pill2{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#1a1d27;border:1px solid #2a2d3a;border-radius:10px;padding:7px 11px;font-size:13px;color:#c8c8c8;margin-bottom:6px}
-.pill2 .g{font-size:10px;color:#666;text-transform:uppercase;background:#262a36;padding:2px 6px;border-radius:4px}
-.pill2 .nm{font-weight:500;color:#e8e8e8}
-.pill2 .sc{font-weight:700;color:#fff;font-variant-numeric:tabular-nums}
-.tag-win{font-size:11px;color:#7FE3C2;background:#0d2a1e;border:1px solid #1D9E7566;padding:2px 8px;border-radius:5px;font-weight:600}
-.tag-wait{font-size:11px;color:#888;background:#161a26;border:1px solid #2a2d3a;padding:2px 8px;border-radius:5px}
-.tag-vol{font-size:11px;background:#12151f;border:1px solid #333;padding:2px 8px;border-radius:5px;font-weight:600}
-.tag-link{margin-left:auto;color:#5BA3E0;text-decoration:none;font-size:15px;padding:0 4px}
-.tag-link:active{opacity:.6}
-.nolive{font-size:12px;color:#444;font-style:italic}
-.upcoming{margin-bottom:12px}
-.upcoming h2{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:#555;margin-bottom:8px}
-.urow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#12151f;border:1px solid #2a2d3a;border-radius:9px;padding:7px 11px;font-size:13px;margin-bottom:5px}
-.urow .ut{font-size:10px;color:#444;background:#1a1d27;padding:2px 7px;border-radius:4px;text-transform:uppercase;min-width:34px;text-align:center}
-.urow .unm{font-weight:500;color:#e0e0e0;flex:1}
-.urow .utime{font-size:12px;color:#666;white-space:nowrap}
-.urow .uvol{font-size:11px;font-weight:600;padding:2px 8px;border-radius:5px;background:#12151f;border:1px solid #333}
-.urow .ulink{color:#5BA3E0;text-decoration:none;font-size:15px;padding:0 2px}
-.urow .ulink:active{opacity:.6}
-.logw{background:#1a1d27;border:1px solid #2a2d3a;border-radius:12px;overflow:hidden}
-.logh{padding:8px 14px;border-bottom:1px solid #2a2d3a;font-size:11px;color:#444}
-.logb{height:170px;overflow-y:auto;padding:4px 0;font-size:12px}
-.lr{padding:4px 14px;display:flex;gap:8px;border-left:3px solid transparent}
-.lr.info{border-color:#2a2d3a}.lr.match{border-color:#378ADD;background:#0a1520}.lr.alert{border-color:#E24B4A;background:#200a0a}
-.lt{color:#444;min-width:44px;flex-shrink:0}
-.lm{color:#c0c0c0;line-height:1.5}.lm.am{color:#ff8080;font-weight:500}
-.ac{display:none;background:#1a0a0a;border:1px solid #E24B4A66;border-radius:10px;padding:10px 12px;margin-bottom:8px;box-shadow:0 0 12px #E24B4A18;max-width:480px}
-.ac.show{display:block}
-.ac .bd{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#ff8585;margin-bottom:5px;font-weight:600}
-.ac .gm{display:inline-block;font-size:10px;background:#3a3d4a;color:#bbb;padding:2px 7px;border-radius:5px;margin-left:7px}
-.at{font-size:15px;font-weight:600;color:#fff;margin-bottom:2px}
-.am2{font-size:11px;color:#888;margin-bottom:6px}
-.wb{background:#0d2a1e;border:1px solid #1D9E7588;border-radius:7px;padding:6px 10px;margin-bottom:6px}
-.wb .wl{font-size:9px;color:#7FE3C2;text-transform:uppercase;letter-spacing:.08em;margin-bottom:1px}
-.wb .wn{font-size:13px;font-weight:600;color:#B8F0DD}
-.legs{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:6px}
-.leg{background:#161a26;border-radius:7px;padding:5px 9px}
-.leg .ll{font-size:9px;color:#777;margin-bottom:1px;text-transform:uppercase;letter-spacing:.06em}
-.leg .lv{font-size:12px;font-weight:500;color:#e0e0e0}
-.vb{border-radius:7px;padding:6px 10px;margin-bottom:5px}
-.vb .vl{font-size:9px;color:#888;text-transform:uppercase;letter-spacing:.08em;margin-bottom:1px}
-.vb .vv{font-size:13px;font-weight:600}
-.vb .vt{font-size:10px;color:#777;margin-top:2px;word-break:break-word}
-.hint{font-size:10px;color:#aaa;background:#161a26;border-radius:6px;padding:5px 9px;line-height:1.4;margin-bottom:5px}
-.dis{width:100%;background:#12151f;color:#555;border:1px solid #2a2d3a;border-radius:7px;padding:7px;font-size:12px;cursor:pointer}
-.pmlink{display:block;text-align:center;background:#13212e;color:#5BA3E0;border:1px solid #2a4a63;border-radius:6px;padding:7px;font-size:11px;text-decoration:none;margin-bottom:6px;font-weight:500}
-.pmlink:active{opacity:.7}
-.achead{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px}
-.acx{background:none;border:none;color:#555;font-size:16px;cursor:pointer;padding:0 4px;line-height:1;width:auto;flex:none}
-#alerts{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,480px));gap:8px;margin-bottom:12px}
-.tabs{display:flex;gap:6px;margin-bottom:14px}
-.tabbtn{flex:1;text-align:center;background:#12151f;border:1px solid #2a2d3a;border-radius:9px;padding:10px;font-size:14px;font-weight:600;color:#888;cursor:pointer;user-select:none;transition:.15s}
-.tabbtn.on{background:#13212e;border-color:#5BA3E0;color:#9fcdf0}
-.wxrow{background:#1a1d27;border:1px solid #2a2d3a;border-radius:11px;padding:11px 13px;margin-bottom:8px}
-.wxhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
-.wxcity{font-size:14px;font-weight:600;color:#fff}
-.wxdate{font-size:11px;color:#666}
-.wxreg{font-size:10px;color:#7a8694;background:#161922;border:1px solid #2a2d3a;padding:2px 7px;border-radius:5px}
-.wxsig{font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-left:auto}
-.wxhrs{font-size:11px;color:#888;background:#12151f;border:1px solid #2a2d3a;padding:3px 8px;border-radius:6px}
-.wxfav{background:#0d2a1e;border:1px solid #1D9E7588;border-radius:8px;padding:7px 11px;margin-bottom:7px;display:flex;align-items:center;gap:10px}
-.wxfav .fl{font-size:9px;color:#7FE3C2;text-transform:uppercase;letter-spacing:.07em}
-.wxfav .fb{font-size:16px;font-weight:700;color:#B8F0DD}
-.wxfav .fp{margin-left:auto;font-size:14px;font-weight:700;color:#7FDDBB;font-variant-numeric:tabular-nums}
-.wxzone{font-size:11px;border-radius:7px;padding:6px 10px;margin-bottom:7px;line-height:1.4}
-.wxzone.ok{color:#9be8c6;background:#0d2a1e;border:1px solid #1D9E7566}
-.wxzone.no{color:#8893a0;background:#181a22;border:1px solid #2a2d3a}
-.wxbuy{display:flex;align-items:center;gap:7px;font-size:12px;color:#9fb6c8;margin-top:8px;cursor:pointer;user-select:none}
-.wxbuy input{width:16px;height:16px;cursor:pointer;accent-color:#1D9E75}
-.wxbts{font-size:10px;color:#7FDDBB;margin-top:3px;min-height:11px}
-.wxrow.bought{opacity:.6}
-.wxcols{display:flex;gap:12px;align-items:flex-start}
-.wxmain{flex:1;min-width:0}
-.wxside{width:236px;flex:none;background:#0e1016;border:1px solid #222633;border-radius:10px;padding:8px}
-.wxside-h{font-size:11px;font-weight:700;color:#7FDDBB;text-transform:uppercase;letter-spacing:.06em;padding:2px 4px 8px}
-.wxside .wxempty2{font-size:11px;color:#555;padding:4px}
-/* компактний вид куплених у вузькій колонці */
-.wxside .wxrow{padding:8px 9px;margin-bottom:7px}
-.wxside .wxreg,.wxside .wxhrs,.wxside .wxsig,.wxside .wxzone,.wxside .wxlink{display:none}
-.wxside .wxfav{padding:5px 8px;margin-bottom:6px}
-.wxside .wxfav .fb{font-size:13px}
-.wxside .wxhead{gap:6px}
-.wxbuys{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px}
-.wxside .wxbuys{gap:8px}
-.wxbuy{display:flex;align-items:center;gap:6px;font-size:12px;color:#9fb6c8;cursor:pointer;user-select:none}
-.wxbuy input{width:16px;height:16px;cursor:pointer;accent-color:#1D9E75}
-.wxbuy.lim input{accent-color:#D9A441}
-.wxbts{font-size:10px;color:#7FDDBB;margin-top:4px;min-height:11px}
-.wxlink{display:block;text-align:center;background:#13212e;color:#5BA3E0;border:1px solid #2a4a63;border-radius:6px;padding:6px;font-size:11px;text-decoration:none;font-weight:500}
-.wxlink:active{opacity:.7}
-.wxempty{font-size:12px;color:#444;font-style:italic}
-.big-vol{font-size:14px !important;font-weight:800 !important;padding:3px 11px !important}
-.big-time{font-size:13px !important;font-weight:700 !important;color:#e8e8e8 !important;border-color:#3a4152 !important}
-.markchk{width:15px;height:15px;cursor:pointer;accent-color:#D9A441;flex:none}
-.urow.marked,.pill2.marked{border-color:#D9A441 !important;background:rgba(217,164,65,.10) !important;box-shadow:inset 3px 0 0 #D9A441}
-.tabs{display:flex;gap:8px;margin:0 0 16px}
-.tnhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:4px 0 14px}
-.tnhead h2{margin:0;font-size:16px}
-#tnstatus{font-size:12px;color:#8aa0b0}
-.tnhead button{background:#13212e;border:1px solid #2a3d4a;color:#9fcdf0;border-radius:7px;padding:6px 12px;cursor:pointer;font-size:13px}
-.tnrow{background:#0e1620;border:1px solid #1e2a38;border-radius:11px;padding:12px 14px;margin-bottom:10px}
-.tnr1{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px}
-.tntour{font-weight:700;font-size:13px;color:#cdd8e5}
-.tnzone{font-size:11px;font-weight:700;letter-spacing:.05em;padding:2px 8px;border-radius:20px}
-.tnlink{margin-left:auto;font-size:12px;color:#5BA3E0;text-decoration:none}
-.tnr2{font-size:13px;color:#b9c6d4;margin-bottom:6px}
-.tnr3{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:#8fa0b2;margin-bottom:6px}
-.tnr4{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;font-weight:600}
+.sub{font-size:12px;color:#667;margin:0 0 14px 18px}
+.bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.bar button{background:#13212e;border:1px solid #2a3d4a;color:#9fcdf0;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px;font-weight:500}
+.bar button:active{opacity:.7}
+.bar .auto.on{background:#11251c;border-color:#1D9E75;color:#7FDDBB}
+#status{font-size:12px;color:#8aa0b0}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:#8893a0;margin-bottom:14px;align-items:center}
+.legend b{color:#a8b3c0;font-weight:600}
+.lg{display:inline-flex;align-items:center;gap:5px}
+.sw{width:11px;height:11px;border-radius:3px;display:inline-block}
+.feed{display:flex;flex-direction:column;gap:7px}
+.mrow{display:flex;align-items:center;gap:11px;flex-wrap:wrap;background:#161a24;border:1px solid #262b38;border-left-width:4px;border-radius:10px;padding:10px 13px}
+.badge{font-size:11px;font-weight:800;letter-spacing:.03em;padding:4px 9px;border-radius:6px;min-width:62px;text-align:center;flex:none}
+.teams{font-size:15px;font-weight:600;color:#f0f0f0;flex:1;min-width:150px}
+.teams .vs{color:#5a6472;font-weight:400;font-size:13px;margin:0 5px}
+.time{font-size:15px;font-weight:700;color:#fff;background:#0e1420;border:1px solid #2f3a4a;border-radius:7px;padding:5px 11px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.time .rel{font-size:11px;font-weight:500;color:#8492a6;margin-left:6px}
+.time.live{color:#7FE3C2;border-color:#1D9E7566;background:#0d2a1e}
+.time.live .rel{color:#7FDDBB}
+.depth{font-size:12px;color:#9fb0c2;background:#12151f;border:1px solid #2a3140;border-radius:6px;padding:4px 9px;white-space:nowrap}
+.depth b{color:#cdd8e5;font-weight:600}
+.depth.thin b{color:#e0a05a}
+.vol{font-size:14px;font-weight:800;padding:4px 11px;border-radius:6px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.lnk{color:#5BA3E0;text-decoration:none;font-size:17px;padding:0 4px;flex:none}
+.lnk:active{opacity:.6}
+.empty{font-size:13px;color:#556;font-style:italic;padding:24px;text-align:center}
+@media(max-width:560px){.teams{min-width:100%;order:5}.badge{order:1}.time{order:2}.vol{order:3}.depth{order:4}.lnk{order:6;margin-left:auto}}
 </style></head><body>
-<h1><div class="dot" id="dot"></div> Bo3 Monitor</h1>
+<h1><div class="dot"></div> Live Esports · Polymarket</h1>
+<div class="sub">CS2 · LoL · Dota2 · Valorant — только Bo3 команда-vs-команда, объём ≥ $100k, идущие и ближайшие</div>
 
-<div class="tabs">
-  <div class="tabbtn on" data-tab="esports" onclick="switchTab(this)">🎮 Киберспорт</div>
-  <div class="tabbtn" data-tab="tennis" onclick="switchTab(this)">🎾 Теннис (Bo3)</div>
-  <div class="tabbtn" data-tab="bo5" onclick="switchTab(this)">🏆 Bo5 · 2:1</div>
+<div class="bar">
+  <button onclick="loadFeed()">↻ Обновить</button>
+  <button class="auto on" id="autobtn" onclick="toggleAuto()">⏱ Авто: вкл</button>
+  <span id="status">загрузка…</span>
 </div>
 
-<div id="tab-esports">
-
-<div id="alerts"></div>
-
-<div class="live"><h2>Live матчи</h2><div id="live"><span class="nolive">—</span></div></div>
-
-<div class="upcoming"><h2>📅 Ближайшие матчи (21ч)</h2><div id="upcoming"><span class="nolive">—</span></div></div>
-
-<div class="card">
-<h2>Игры</h2>
-<div class="games">
-<div class="chip on" data-g="cs2" onclick="tg(this)">CS2</div>
-<div class="chip" data-g="valorant" onclick="tg(this)">Valorant</div>
-<div class="chip" data-g="dota2" onclick="tg(this)">Dota 2</div>
-</div>
-<div class="row">
-<div><label>Интервал (сек)</label><input type="number" id="iv" value="20" min="10" max="60"></div>
-<div><label>Мин. тир</label><select id="tier"><option value="">Все</option><option value="a">A+ (тир-1/2)</option><option value="s">S (топ)</option></select></div>
-</div>
+<div class="legend">
+  <b>Объём:</b>
+  <span class="lg"><span class="sw" style="background:#8893a0"></span> $100k–200k</span>
+  <span class="lg"><span class="sw" style="background:#D9A441"></span> $200k–500k</span>
+  <span class="lg"><span class="sw" style="background:#1D9E75"></span> ≥ $500k</span>
+  <span style="color:#556">·  время киевское · «стакан» = глубина match-winner на ±12¢</span>
 </div>
 
-<div class="btns">
-<button class="start" onclick="start()">▶ Запустить</button>
-<button class="stop" onclick="stop()">⏹ Стоп</button>
-<button class="test" onclick="test()">🔔</button>
-<button class="test" onclick="toggleVoices()" title="Вибір голосу">🎙</button>
-</div>
-<div id="voicebox" style="display:none"></div>
-
-<div class="logw"><div class="logh">Лог</div><div class="logb" id="log"></div></div>
-
-</div><!-- /tab-esports -->
-
-<div id="tab-tennis" style="display:none">
-  <div class="tnhead">
-    <h2>🎾 Теннис Bo3 · перерыв после сета 1 (счёт 1:0)</h2>
-    <span id="tnstatus">—</span>
-    <button onclick="loadTennis()">↻ Обновить</button>
-  </div>
-  <div id="tnlist"><span class="nolive">—</span></div>
-  <h2 style="font-size:15px;margin:20px 0 10px">⏳ Скоро / в игре · ликвидные Bo3 <span style="font-size:12px;color:#8fa0b2;font-weight:400">(глубина основного стакана · время киевское)</span></h2>
-  <div id="tnwatch"><span class="nolive">—</span></div>
-</div>
-
-<div id="tab-bo5" style="display:none">
-  <div class="tnhead">
-    <h2>🏆 Bo5 · серия-пойнт 2:1</h2>
-    <span id="b5status">—</span>
-    <button onclick="loadBo5()">↻ Обновить</button>
-  </div>
-  <h2 style="font-size:15px;color:#c8aa6e;margin:6px 0 8px">🎮 LoL Bo5 · на 2:1</h2>
-  <div id="b5_lol_ser"><span class="nolive">—</span></div>
-  <div style="font-size:12px;color:#8fa0b2;margin:10px 0 6px">живые LoL Bo5 (караулить до 2:1 · время киевское):</div>
-  <div id="b5_lol_watch"><span class="nolive">—</span></div>
-  <h2 style="font-size:15px;color:#5bd6ff;margin:24px 0 8px">🎾 Теннис Bo5 · на 2:1 <span style="font-size:12px;color:#8fa0b2;font-weight:400">(муж. слэм)</span></h2>
-  <div id="b5_ten_ser"><span class="nolive">—</span></div>
-  <div style="font-size:12px;color:#8fa0b2;margin:10px 0 6px">живые теннис Bo5 (караулить до 2:1 · время киевское):</div>
-  <div id="b5_ten_watch"><span class="nolive">—</span></div>
-</div>
-
+<div class="feed" id="feed"><div class="empty">загрузка…</div></div>
 
 <script>
-let lastAlertId=0, lastLogLen=0, running=false;
+var GAME_COL = {CS2:'#F5A623', LoL:'#4C9BE0', Dota2:'#E24B4A', Valorant:'#E255A0'};
+var auto = true, timer = null;
 
-let actx=null;
-function ac(){try{if(!actx)actx=new(window.AudioContext||window.webkitAudioContext)();if(actx.state==='suspended')actx.resume();}catch(e){}return actx;}
-function beep(){try{const c=ac();if(!c)return;[[880,0],[660,.2],[880,.4]].forEach(([freq,t])=>{const o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.frequency.value=freq;o.type='sine';g.gain.setValueAtTime(1.0,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+.2);o.start(c.currentTime+t);o.stop(c.currentTime+t+.21)})}catch(e){}}
-function tones(seq,gain){try{const c=ac();if(!c)return;seq.forEach(([f,t])=>{const o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.frequency.value=f;o.type='sine';g.gain.setValueAtTime(gain,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+.22);o.start(c.currentTime+t);o.stop(c.currentTime+t+.23)})}catch(e){}}
-function unlockAudio(){ac();try{if(window.speechSynthesis){speechSynthesis.resume();const u=new SpeechSynthesisUtterance(' ');u.volume=0;speechSynthesis.speak(u);}}catch(e){}}
-document.addEventListener('pointerdown',unlockAudio);
-let _voices=[];
-function loadVoices(){try{_voices=(window.speechSynthesis&&speechSynthesis.getVoices())||[];}catch(e){}}
-if(window.speechSynthesis){loadVoices();try{speechSynthesis.onvoiceschanged=loadVoices;}catch(e){}}
-function pickFemaleVoice(){
-  if(!_voices.length)loadVoices();
-  const en=_voices.filter(v=>/^en/i.test(v.lang));
-  const pref=['samantha','google us english','zira','karen','moira','tessa','victoria','fiona','serena','aria','jenny','michelle','female'];
-  for(const name of pref){const v=en.find(v=>v.name.toLowerCase().includes(name));if(v)return v;}
-  return en[0]||_voices[0]||null;
-}
-function chosenVoice(){
-  let pref=null; try{pref=localStorage.getItem('voicePref');}catch(e){}
-  if(pref){const v=_voices.find(v=>v.name===pref); if(v)return v;}
-  return pickFemaleVoice();
-}
-function curPitch(){let p=1.15;try{const s=localStorage.getItem('voicePitch');if(s)p=parseFloat(s);}catch(e){}return p;}
-function speak(txt,vol){try{if(!window.speechSynthesis)return;speechSynthesis.resume();const u=new SpeechSynthesisUtterance(txt);u.lang='en-US';const v=chosenVoice();if(v){u.voice=v;u.lang=v.lang;}u.volume=(vol||.55);u.rate=.9;u.pitch=curPitch();speechSynthesis.cancel();setTimeout(()=>{try{speechSynthesis.resume();speechSynthesis.speak(u);}catch(e){}},60);}catch(e){}}
-function toggleVoices(){const b=document.getElementById('voicebox');if(!b)return;if(b.style.display==='none'){b.style.display='block';renderVoices();}else{b.style.display='none';}}
-function renderVoices(){
-  loadVoices();
-  const b=document.getElementById('voicebox'); if(!b)return;
-  let pref=''; try{pref=localStorage.getItem('voicePref')||'';}catch(e){}
-  const pitch=curPitch();
-  const en=_voices.filter(v=>/^en/i.test(v.lang));
-  const list=en.length?en:_voices;
-  let html='<div class="vlh">Голоси браузера ('+list.length+') — ▶ послухати, ✓ вибрати</div>';
-  html+='<div class="vpitch">🎈 мультяшність: <input type="range" min="1" max="2" step="0.05" value="'+pitch+'" oninput="document.getElementById(\'vpv\').textContent=(+this.value).toFixed(2)" onchange="setPitch(this.value)"> <span id="vpv">'+pitch.toFixed(2)+'</span></div>';
-  if(!list.length){html+='<div style="font-size:11px;color:#888">Голоси ще не завантажились — закрий і відкрий ще раз.</div>';}
-  list.forEach(v=>{
-    const nm=v.name.replace(/'/g,"\\'");
-    const sel=v.name===pref?' sel':'';
-    html+='<div class="vrow'+sel+'"><span class="vn">'+escapeHtml(v.name)+' <i>'+escapeHtml(v.lang)+'</i></span>'
-        +'<button onclick="previewVoice(\''+nm+'\')">▶</button>'
-        +'<button onclick="setVoice(\''+nm+'\')">'+(v.name===pref?'✓':'вибрати')+'</button></div>';
-  });
-  b.innerHTML=html;
-}
-function setPitch(val){try{localStorage.setItem('voicePitch',val);}catch(e){}previewVoice(null);}
-function setVoice(name){try{localStorage.setItem('voicePref',name);}catch(e){}renderVoices();previewVoice(name);}
-function previewVoice(name){try{if(!window.speechSynthesis)return;speechSynthesis.resume();const u=new SpeechSynthesisUtterance('Map one end');const v=name?_voices.find(x=>x.name===name):chosenVoice();if(v){u.voice=v;u.lang=v.lang;}u.volume=.6;u.rate=.9;u.pitch=curPitch();speechSynthesis.cancel();setTimeout(()=>{try{speechSynthesis.resume();speechSynthesis.speak(u);}catch(e){}},60);}catch(e){}}
-function playPhase(p,marked){
-  if(marked){
-    // помеченный матч — отдельный, более громкий сигнал
-    if(p==='m1start'){tones([[700,0],[900,.12],[1100,.24]],1.0);speak('Marked. Map one start',1.0);}
-    else if(p==='m1end'){tones([[1150,0],[880,.16],[1150,.32],[880,.48],[1150,.64]],1.0);speak('Marked match. Map one end',1.0);}
-    else if(p==='m2end'){tones([[950,0],[720,.2],[950,.4]],.95);speak('Marked. Map two end',1.0);}
-    return;
-  }
-  if(p==='m1start'){tones([[520,0],[680,.18]],.26);speak('Map one start');}
-  else if(p==='m1end'){tones([[820,0],[640,.2],[820,.4]],.5);speak('Map one end');}
-  else if(p==='m2end'){tones([[700,0],[520,.2],[420,.4]],.36);speak('Map two end');}
-}
-let playedSounds=[], soundsSeeded=false;
-function processSounds(arr){
-  if(!arr)return;
-  if(!soundsSeeded){ playedSounds=arr.map(s=>s.id); soundsSeeded=true; return; } // не «взрывать» при загрузке
-  arr.forEach(s=>{
-    if(!s||playedSounds.includes(s.id))return;
-    playedSounds.push(s.id); if(playedSounds.length>40)playedSounds=playedSounds.slice(-40);
-    let marked=false; try{marked=!!localStorage.getItem('mark:'+s.game+'|'+s.t1+'|'+s.t2);}catch(_){}
-    playPhase(s.phase,marked); dot('alert');
-  });
-}
+function esc(s){return (s||'').replace(/[&<>"]/g,function(c){return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]})}
+function money(v){ if(v==null) return '—'; return '$'+(v>=1000?(v/1000).toFixed(v>=100000?0:1)+'k':v); }
 
-function dot(s){document.getElementById('dot').className='dot'+(s?' '+s:'')}
-
-function tg(el){el.classList.toggle('on')}
-
-function getGames(){const g={};document.querySelectorAll('.chip').forEach(c=>g[c.dataset.g]=c.classList.contains('on'));return g}
-
-function renderLog(log){
-  const b=document.getElementById('log');
-  b.innerHTML=log.map(e=>`<div class="lr ${e.level}"><span class="lt">${e.ts}</span><span class="lm ${e.level==='alert'?'am':''}">${e.msg}</span></div>`).join('');
-  b.scrollTop=b.scrollHeight;
-}
-
-function renderUpcoming(upcoming){
-  const el=document.getElementById('upcoming');
-  if(!upcoming||!upcoming.length){el.innerHTML='<span class="nolive">Нет запланированных матчей</span>';return}
-  el.innerHTML=upcoming.map(m=>{
-    const vol=m.vol_text&&m.vol_text!=='?'
-      ?`<span class="uvol big-vol" style="color:${m.vol_color};border-color:${m.vol_color}55">${m.vol_text}</span>`
-      :`<span class="uvol big-vol" style="color:#888;border-color:#444">нет рынка</span>`;
-    const roi=m.roi_hint?`<span class="uvol" style="color:#888;border-color:#333;font-weight:400">${m.roi_hint}</span>`:'';
-    const link=m.pm_url?`<a class="ulink" href="${m.pm_url}" target="_blank">↗</a>`:'';
-    const diffStr=m.diff_h<1?`${Math.round(m.diff_h*60)}мин`:`${m.diff_h.toFixed(1)}ч`;
-    const key='mark:'+m.game+'|'+m.t1+'|'+m.t2;
-    return `<div class="urow" data-mk="${escapeHtml(key)}">
-      <input type="checkbox" class="markchk" title="Пометить, чтобы не пропустить">
-      <span class="ut">${escapeHtml(m.game)}</span>
-      <span class="unm">${escapeHtml(m.t1)} vs ${escapeHtml(m.t2)}</span>
-      <span class="utime big-time">⏰ ${m.kyiv_time} (через ${diffStr})</span>
-      ${vol}${roi}${link}
-    </div>`;
+function render(ms){
+  var box = document.getElementById('feed');
+  if(!ms || !ms.length){ box.innerHTML='<div class="empty">Нет активных Bo3-матчей ≥ $100k сейчас</div>'; return; }
+  box.innerHTML = ms.map(function(m){
+    var gc = GAME_COL[m.game] || '#8893a0';
+    var badge = '<span class="badge" style="color:'+gc+';background:'+gc+'22;border:1px solid '+gc+'55">'+esc(m.game)+'</span>';
+    var live = (m.when==='в игре');
+    var time = '<span class="time'+(live?' live':'')+'">⏰ '+esc(m.start)+'<span class="rel">'+esc(m.when)+'</span></span>';
+    var thin = (m.depth!=null && m.depth<2000);
+    var depth = '<span class="depth'+(thin?' thin':'')+'">стакан <b>'+money(m.depth)+'</b></span>';
+    var vol = '<span class="vol" style="color:'+m.color+';background:'+m.color+'1e;border:1px solid '+m.color+'55">'+esc(m.vol_text)+'</span>';
+    var link = m.url ? '<a class="lnk" href="'+m.url+'" target="_blank" title="Открыть на Polymarket">↗</a>' : '';
+    return '<div class="mrow" style="border-left-color:'+m.color+'">'
+      + badge
+      + '<span class="teams">'+esc(m.t1)+'<span class="vs">vs</span>'+esc(m.t2)+'</span>'
+      + time + depth + vol + link
+      + '</div>';
   }).join('');
 }
 
-function renderLive(live){
-  const el=document.getElementById('live');
-  if(!live.length){el.innerHTML='<span class="nolive">Нет активных матчей</span>';return}
-  el.innerHTML=live.map(m=>{
-    const win = m.window
-      ? `<span class="tag-win">🎯 Окно</span>`
-      : `<span class="tag-wait">⏳ ждём К1</span>`;
-    const vol = m.vol_text && m.vol_text!=='?'
-      ? `<span class="tag-vol big-vol" style="color:${m.vol_color};border-color:${m.vol_color}55">${m.vol_text}</span>`
-      : `<span class="tag-vol big-vol" style="color:#888;border-color:#444">нет рынка</span>`;
-    const roi = m.roi_hint
-      ? `<span class="tag-vol" style="color:#888;border-color:#333;font-weight:400">${m.roi_hint}</span>`
-      : '';
-    const time = m.start_kyiv
-      ? `<span class="tag-vol big-time" style="border-color:#3a4152">⏰ ${m.start_kyiv}</span>`
-      : '';
-    const link = m.pm_url
-      ? `<a class="tag-link" href="${m.pm_url}" target="_blank" title="Открыть на Polymarket">↗</a>`
-      : '';
-    const key='mark:'+m.game+'|'+m.t1+'|'+m.t2;
-    return `<div class="pill2" data-mk="${escapeHtml(key)}">
-      <input type="checkbox" class="markchk" title="Пометить, чтобы не пропустить">
-      <span class="g">${m.game}</span>
-      <span class="nm">${escapeHtml(m.t1)} vs ${escapeHtml(m.t2)}</span>
-      <span class="sc">${m.s1}:${m.s2}</span>
-      ${time}${win}${vol}${roi}${link}
-    </div>`;
-  }).join('');
-}
-
-// Помеченные матчи (localStorage) — восстановить чекбоксы и подсветку после каждого ререндера
-function restoreMarks(){
-  document.querySelectorAll('[data-mk]').forEach(row=>{
-    const key=row.getAttribute('data-mk');
-    const chk=row.querySelector('.markchk');
-    if(!chk)return;
-    let on=false; try{on=!!localStorage.getItem(key);}catch(_){}
-    chk.checked=on; row.classList.toggle('marked',on);
-    chk.onchange=function(){
-      try{ if(chk.checked)localStorage.setItem(key,'1'); else localStorage.removeItem(key); }catch(_){}
-      row.classList.toggle('marked',chk.checked);
-    };
-  });
-}
-
-const MAX_ALERTS=5;
-let shownIds=[];
-
-function escapeHtml(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
-
-function buildCard(a){
-  const pmLink = a.pm_url
-    ? `<a class="pmlink" href="${a.pm_url}" target="_blank">↗ Открыть на Polymarket</a>`
-    : '';
-  const fin = a.finished_at ? ` · ${a.finished_at} КИЇВ` : '';
-  const mapScore = a.map_score
-    ? `<div class="am2">Счёт серии: ${a.score} &nbsp;|&nbsp; Рахунок К1: <b>${a.map_score}</b></div>`
-    : `<div class="am2">Счёт: ${a.score}</div>`;
-  return `<div class="ac show" data-id="${a.id}">
-    <div class="achead">
-      <div class="bd">🚨 Карта 1 завершена${fin}<span class="gm">${escapeHtml(a.game)}</span></div>
-      <button class="acx" onclick="closeCard(${a.id})">✕</button>
-    </div>
-    <div class="at">${escapeHtml(a.t1)} vs ${escapeHtml(a.t2)}</div>
-    ${mapScore}
-    <div class="wb"><div class="wl">Взял К1</div><div class="wn">✅ ${escapeHtml(a.winner)}</div></div>
-    <div class="vb" style="border:1px solid ${a.vol_color}66;background:${a.vol_color}1a">
-      <div class="vl">Об'єм Polymarket</div>
-      <div class="vv" style="color:${a.vol_color}">${escapeHtml(a.vol_text)}</div>
-      <div class="vt">${escapeHtml(a.pm_title)||'Ринок не знайдено'}</div>
-    </div>
-    ${pmLink}
-  </div>`;
-}
-
-function showAlert(a){
-  if(!a||shownIds.includes(a.id))return;
-  shownIds.push(a.id);
-  if(shownIds.length>MAX_ALERTS)shownIds=shownIds.slice(-MAX_ALERTS);
-  dot('alert');
-
-  const box=document.getElementById('alerts');
-  box.insertAdjacentHTML('afterbegin', buildCard(a));
-  // обрезаем до MAX_ALERTS карточек
-  while(box.children.length>MAX_ALERTS) box.removeChild(box.lastChild);
-
-  if(Notification.permission==='granted')new Notification(a.game+' — Карта 1!',{body:a.winner+' взял К1. '+a.vol_text});
-  let bl=true;const t=setInterval(()=>{document.title=bl?'🚨 К1 ЗАВЕРШЕНА':'Esports Monitor';bl=!bl;if(document.getElementById('alerts').children.length===0)clearInterval(t)},800);
-}
-
-function closeCard(id){
-  const box=document.getElementById('alerts');
-  [...box.children].forEach(c=>{if(c.dataset.id==id)box.removeChild(c)});
-  if(box.children.length===0){dot(running?'on':'');document.title='Esports Monitor'}
-}
-
-async function poll(){
+async function loadFeed(){
+  var st = document.getElementById('status');
+  st.textContent = 'загрузка…';
   try{
-    const r=await fetch('/state');const s=await r.json();
-    running=s.running;const hasAlerts=document.getElementById('alerts').children.length>0;dot(running?(hasAlerts?'alert':'on'):(hasAlerts?'alert':''));
-    renderLog(s.log);renderLive(s.live);renderUpcoming(s.upcoming||[]);restoreMarks();
-    if(s.alerts)s.alerts.forEach(showAlert);
-    processSounds(s.sounds);
-  }catch(e){}
+    var r = await fetch('/feed'); var d = await r.json();
+    render(d.matches||[]);
+    var tm = d.ts || new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    st.textContent = (d.matches?d.matches.length:0)+' матчей · обновлено '+tm+(d.error?(' · ошибка: '+d.error):'');
+  }catch(e){ st.textContent = 'ошибка загрузки'; }
 }
 
-function start(){
-  if(Notification.permission==='default')Notification.requestPermission();
-  fetch('/start',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({games:getGames(),interval:parseInt(document.getElementById('iv').value)||20,min_tier:document.getElementById('tier').value})});
-}
-function stop(){fetch('/stop',{method:'POST'})}
-function test(){playPhase('m1start');setTimeout(()=>playPhase('m1end'),1700);setTimeout(()=>playPhase('m2end'),3600);const t=new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Kyiv'});showAlert({id:Date.now(),game:'CS2',t1:'Team Spirit',t2:'NAVI',score:'1:0',winner:'Team Spirit',loser:'NAVI',vol_text:'🟢 БОЛЬШОЙ  $120,000',vol_color:'#1D9E75',pm_title:'Counter-Strike: Spirit vs NAVI (BO3) - IEM Cologne',pm_url:'',finished_at:t,map_score:'16:12'})}
-
-function switchTab(el){
-  document.querySelectorAll('.tabbtn').forEach(b=>b.classList.remove('on'));
-  el.classList.add('on');
-  const t=el.dataset.tab;
-  document.getElementById('tab-esports').style.display = t==='esports'?'':'none';
-  const tn=document.getElementById('tab-tennis'); if(tn) tn.style.display = t==='tennis'?'':'none';
-  const b5=document.getElementById('tab-bo5'); if(b5) b5.style.display = t==='bo5'?'':'none';
-  if(t==='tennis'){ loadTennis(); if(!tnTimer) tnTimer=setInterval(loadTennis,45000); }
-  else if(tnTimer){ clearInterval(tnTimer); tnTimer=null; }
-  if(t==='bo5'){ loadBo5(); if(!b5Timer) b5Timer=setInterval(loadBo5,45000); }
-  else if(b5Timer){ clearInterval(b5Timer); b5Timer=null; }
-}
-let tnTimer=null, b5Timer=null;
-async function loadBo5(){
-  const st=document.getElementById('b5status'); if(st)st.textContent='загрузка…';
-  try{
-    const r=await fetch('/bo5'); const d=await r.json();
-    renderBo5(d.series||[]); renderBo5watch(d.watch||[]);
-    const tm=new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
-    if(st)st.textContent=(d.series?d.series.length:0)+' на 2:1 · '+((d.watch||[]).length)+' живых · '+tm+(d.error?(' · ошибка: '+d.error):'');
-  }catch(e){ if(st)st.textContent='ошибка загрузки'; }
-}
-function renderBo5(ms){
-  const zc={green:'#34d399',yellow:'#e8b84a',red:'#f0556b'}, zt={green:'ЗЕЛЁНАЯ',yellow:'ЖЁЛТАЯ',red:'КРАСНАЯ'};
-  const wl=s=>escapeHtml((String(s||'').split(' ').pop())||String(s||''));
-  function row(m){
-    const z=zc[m.zone]||'#888';
-    const ec=(m.edge==null)?'#8fa0b2':(m.edge>=10?'#34d399':(m.edge>=0?'#e8b84a':'#f0556b'));
-    const nb=(m.t2m==null)?'—':(m.t2m+'¢');
-    const ed=(m.edge==null)?'—':((m.edge>=0?'+':'')+m.edge+'¢');
-    return '<div class="tnrow" style="border-left:4px solid '+z+'">'
-      +'<div class="tnr1"><span class="tntour">'+escapeHtml(m.tour)+' · <b style="color:'+z+'">'+m.sc+'</b></span>'
-      +'<span class="tnzone" style="color:'+z+';border:1px solid '+z+'66">'+(zt[m.zone]||'')+' '+m.t1s+'¢</span>'
-      +_links(m.leader,m.trailer,m.url)+'</div>'
-      +'<div class="tnr2"><b>'+escapeHtml(m.leader)+'</b> ведёт '+m.sc+' · трейлер <b>'+escapeHtml(m.trailer)+'</b></div>'
-      +'<div class="tnr3"><span>Нога A: серия '+wl(m.leader)+' по <b>'+m.t1s+'¢</b> → при 2:2 продать ≈'+m.forecast+'¢</span>'
-      +'<span>Нога B: '+wl(m.trailer)+' берёт след. ед. по <b>'+nb+'</b></span></div>'
-      +'<div class="tnr4"><span style="color:'+ec+'">EDGE ≈ '+ed+'</span>'+_volSpan(m.vol)+_liqSpan(m.depth)+'</div>'
-      +'</div>';
-  }
-  const lb=document.getElementById('b5_lol_ser'), tb=document.getElementById('b5_ten_ser');
-  const lol=ms.filter(m=>m.sport==='lol'), ten=ms.filter(m=>m.sport==='tennis');
-  if(lb) lb.innerHTML = lol.length? lol.map(row).join('') : '<span class="nolive">Нет LoL на 2:1 сейчас</span>';
-  if(tb) tb.innerHTML = ten.length? ten.map(row).join('') : '<span class="nolive">Нет тенниса на 2:1 сейчас</span>';
-}
-function renderBo5watch(ms){
-  function row(m){
-    const hrs=m.start?('старт '+m.start):'';
-    return '<div class="tnrow">'
-      +'<div class="tnr1"><span class="tntour">'+escapeHtml(m.tour)+' · <b>'+m.sc+'</b></span>'
-      +(hrs?'<span style="font-size:12px;color:#8fa0b2">'+hrs+'</span>':'')
-      +_links(m.fav,'',m.url)+'</div>'
-      +'<div class="tnr2">фаворит <b>'+escapeHtml(m.fav)+'</b> '+m.favpx+'¢</div>'
-      +'<div class="tnr4">'+_volSpan(m.vol)+_liqSpan(m.depth)+'</div>'
-      +'</div>';
-  }
-  const lb=document.getElementById('b5_lol_watch'), tb=document.getElementById('b5_ten_watch');
-  const lol=ms.filter(m=>m.sport==='lol'), ten=ms.filter(m=>m.sport==='tennis');
-  if(lb) lb.innerHTML = lol.length? lol.map(row).join('') : '<span class="nolive">Нет живых LoL Bo5</span>';
-  if(tb) tb.innerHTML = ten.length? ten.map(row).join('') : '<span class="nolive">Нет живых теннис Bo5</span>';
-}
-function _dep(v){return v==null?'—':('$'+(v>=1000?(v/1000).toFixed(1)+'k':v));}
-function _volk(v){v=v||0;return '$'+(v>=1000?(v/1000).toFixed(0)+'k':v);}
-function _volSpan(v){return '<span style="color:#8fa0b2">оборот '+_volk(v)+'</span>';}
-function _liqSpan(v){var ok=(v||0)>=2000;return '<span style="color:'+(v==null?'#8fa0b2':(ok?'#34d399':'#f0556b'))+'">стакан матча: '+_dep(v)+(v==null?'':(ok?' ✓ ликвидно':' ⚠ тонко'))+'</span>';}
-function _links(a,b,url){
-  var q=encodeURIComponent((a||'')+' '+(b||''));
-  return '<span style="margin-left:auto;display:inline-flex;gap:12px;flex-wrap:wrap">'
-    +'<a class="tnlink" style="margin:0;color:#e8b84a" href="https://www.sofascore.com/search?q='+q+'" target="_blank">📊 SofaScore</a>'
-    +'<a class="tnlink" style="margin:0;color:#e8b84a" href="https://www.flashscore.com/search/?q='+q+'" target="_blank">Flashscore</a>'
-    +'<a class="tnlink" style="margin:0" href="'+url+'" target="_blank">↗ Polymarket</a></span>';
-}
-async function loadTennis(){
-  const st=document.getElementById('tnstatus'); if(st)st.textContent='загрузка…';
-  try{
-    const r=await fetch('/tennis'); const d=await r.json();
-    renderBreaks(d.matches||[]); renderWatch(d.upcoming||[]);
-    const tm=new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
-    if(st)st.textContent=(d.matches?d.matches.length:0)+' в перерыве 1:0 · '+((d.upcoming||[]).length)+' на карауле · '+tm+(d.error?(' · ошибка: '+d.error):'');
-  }catch(e){ if(st)st.textContent='ошибка загрузки'; }
-}
-function renderBreaks(ms){
-  const box=document.getElementById('tnlist'); if(!box)return;
-  if(!ms.length){box.innerHTML='<span class="nolive">Нет матчей в перерыве после сета 1 (Bo3)</span>';return;}
-  const zc={green:'#34d399',yellow:'#e8b84a',red:'#f0556b'}, zt={green:'ЗЕЛЁНАЯ',yellow:'ЖЁЛТАЯ',red:'КРАСНАЯ'};
-  const wl=s=>escapeHtml((String(s||'').split(' ').pop())||String(s||''));
-  box.innerHTML=ms.map(m=>{
-    const z=zc[m.zone]||'#888';
-    const g=m.g==='M'?'<span style="color:#4ab3f4">♂</span>':(m.g==='W'?'<span style="color:#f06ba0">♀</span>':'');
-    const ec=m.edge>=10?'#34d399':(m.edge>=0?'#e8b84a':'#f0556b');
-    return '<div class="tnrow" style="border-left:4px solid '+z+'">'
-      +'<div class="tnr1"><span class="tntour">'+escapeHtml(m.tour)+' '+g+'</span>'
-      +'<span class="tnzone" style="color:'+z+';border:1px solid '+z+'66">'+(zt[m.zone]||'')+' '+m.t1s+'¢</span>'
-      +_links(m.winner,m.loser,m.url)+'</div>'
-      +'<div class="tnr2"><b>'+escapeHtml(m.winner)+'</b> взял сет 1 · соперник <b>'+escapeHtml(m.loser)+'</b></div>'
-      +'<div class="tnr3"><span>Нога A: матч '+wl(m.winner)+' по <b>'+m.t1s+'¢</b> → при 1:1 продать ≈'+m.forecast+'¢</span>'
-      +'<span>Нога B: Set 2 '+wl(m.loser)+' по <b>'+m.t2m+'¢</b></span></div>'
-      +'<div class="tnr4"><span style="color:'+ec+'">EDGE ≈ '+(m.edge>=0?'+':'')+m.edge+'¢</span>'+_liqSpan(m.depth)+'</div>'
-      +'</div>';
-  }).join('');
-}
-function renderWatch(ms){
-  const box=document.getElementById('tnwatch'); if(!box)return;
-  if(!ms.length){box.innerHTML='<span class="nolive">Нет ликвидных Bo3 в ближайшем окне</span>';return;}
-  box.innerHTML=ms.map(m=>{
-    const g=m.g==='M'?'<span style="color:#4ab3f4">♂</span>':(m.g==='W'?'<span style="color:#f06ba0">♀</span>':'');
-    const volk='$'+(m.vol>=1000?(m.vol/1000).toFixed(0)+'k':m.vol);
-    const inplay=(m.hours!=null&&m.hours<0);
-    const hrs=(m.start==null)?(inplay?'в игре':''):(inplay?('в игре · с '+m.start):('старт '+m.start));
-    return '<div class="tnrow">'
-      +'<div class="tnr1"><span class="tntour">'+escapeHtml(m.tour)+' '+g+'</span>'
-      +(hrs?'<span style="font-size:12px;color:#8fa0b2">'+hrs+'</span>':'')
-      +_links(m.p1,m.p2,m.url)+'</div>'
-      +'<div class="tnr2">'+escapeHtml(m.p1)+' vs '+escapeHtml(m.p2)+' · фаворит <b>'+escapeHtml(m.fav)+'</b> '+m.fav_px+'¢</div>'
-      +'<div class="tnr4"><span style="color:#8fa0b2">оборот '+volk+'</span>'+_liqSpan(m.depth)+'</div>'
-      +'</div>';
-  }).join('');
-}
-let wxLoaded=false, wxTimer=null;
-async function loadWx(){
-  const st=document.getElementById('wxstatus');st.textContent='завантаження…';
-  try{
-    const r=await fetch('/weather');const d=await r.json();
-    renderWx(d.events||[]);
-    const t=new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit'});
-    st.textContent=(d.events?d.events.length:0)+' ринків · оновлено '+t+(d.error?(' · помилка: '+d.error):'');
-    wxLoaded=true;
-  }catch(e){st.textContent='помилка завантаження'}
-}
-function renderWx(evs){
-  const box=document.getElementById('wxlist');
-  if(!evs.length){box.innerHTML='<span class="wxempty">Немає відкритих погодних ринків</span>';return}
-  box.innerHTML=evs.map(e=>{
-    const hrs = e.hours==null?'—':(e.hours<0?'завершено':e.hours+'г');
-    const volk = e.vol>=1000 ? (e.vol/1000).toFixed(0)+'k' : e.vol;
-    const wxid = e.url || (e.city+'|'+e.date+'|'+e.fav_lab);
-    const sig = e.in_zone
-      ? `<div class="wxzone ok">✓ дешевий фаворит ${e.fav_px}¢ + тонкий ринок ($${volk}) — обидва сигнали</div>`
-      : `<div class="wxzone no">фаворит ${e.fav_px}¢ · обсяг $${volk} ${e.low_vol?'(тонкий ✓)':'(товстий)'} ${e.fav_px<50?'· ціна ✓':'· фав >50¢'}</div>`;
-    const link = e.url ? `<a class="wxlink" href="${e.url}" target="_blank">↗ Відкрити на Polymarket</a>` : '';
-    return `<div class="wxrow" data-wxid="${escapeHtml(wxid)}"${e.in_zone?' style="border-color:#1D9E7566"':''}>
-      <div class="wxhead">
-        <span class="wxcity">${escapeHtml(e.city)}</span>
-        <span class="wxdate">${escapeHtml(e.date)}</span>
-        <span class="wxreg">${escapeHtml(e.region)}${e.is_low?' · Lowest':' · Highest'}</span>
-        <span class="wxhrs">⏳ ${hrs} до кінця</span>
-        <span class="wxsig" style="color:${e.sig_color};background:${e.sig_color}1a;border:1px solid ${e.sig_color}55">${escapeHtml(e.signal)}</span>
-      </div>
-      <div class="wxfav">
-        <div><div class="fl">Купити фаворита</div><div class="fb">${escapeHtml(e.fav_lab)}</div></div>
-        <span class="fp">${e.fav_px}¢</span>
-      </div>
-      ${sig}${link}
-      <div class="wxbuys">
-        <label class="wxbuy lim"><input type="checkbox" class="wxlimchk"> Лімітка</label>
-        <label class="wxbuy"><input type="checkbox" class="wxbuychk"> Куплено</label>
-      </div>
-      <div class="wxbts"></div>
-    </div>`;
-  }).join('');
-  wxRestore();
+function toggleAuto(){
+  auto = !auto;
+  var b = document.getElementById('autobtn');
+  b.className = 'auto'+(auto?' on':'');
+  b.textContent = '⏱ Авто: '+(auto?'вкл':'выкл');
+  if(auto){ loadFeed(); if(!timer) timer=setInterval(loadFeed,30000); }
+  else if(timer){ clearInterval(timer); timer=null; }
 }
 
-function wxRestore(){
-  const box=document.getElementById('wxlist');
-  const side=document.getElementById('wxbought');
-  side.innerHTML='<div class="wxside-h">✅ Куплено</div>';
-  box.querySelectorAll('.wxrow').forEach(row=>{
-    const id=row.getAttribute('data-wxid');
-    const kb='wxbought:'+id, kl='wxlimit:'+id;
-    const chkB=row.querySelector('.wxbuychk');
-    const chkL=row.querySelector('.wxlimchk');
-    const bts=row.querySelector('.wxbts');
-    let tb=null,tl=null;
-    try{tb=localStorage.getItem(kb);tl=localStorage.getItem(kl);}catch(_){}
-    const stamp=()=>{const n=new Date(),p=x=>('0'+x).slice(-2);
-      return p(n.getDate())+'.'+p(n.getMonth()+1)+' '+p(n.getHours())+':'+p(n.getMinutes());};
-    const paint=()=>{
-      let s='';
-      if(tl) s+='🟡 лімітка '+tl;
-      if(tb) s+=(s?' · ':'')+'✅ куплено '+tb;
-      bts.textContent=s;
-    };
-    if(tl){chkL.checked=true;}
-    if(tb){chkB.checked=true;row.classList.add('bought');side.appendChild(row);}
-    paint();
-    chkL.onchange=function(){
-      try{ if(chkL.checked){tl=stamp();localStorage.setItem(kl,tl);}
-           else{tl=null;localStorage.removeItem(kl);} paint(); }catch(_){}
-    };
-    chkB.onchange=function(){
-      try{
-        if(chkB.checked){tb=stamp();localStorage.setItem(kb,tb);row.classList.add('bought');side.appendChild(row);}
-        else{tb=null;localStorage.removeItem(kb);row.classList.remove('bought');box.appendChild(row);}
-        paint();
-      }catch(_){}
-    };
-  });
-  if(!side.querySelector('.wxrow'))
-    {if(!side.querySelector('.wxempty2')) side.insertAdjacentHTML('beforeend','<div class="wxempty2">поки порожньо</div>');}
-  else {const e=side.querySelector('.wxempty2'); if(e) e.remove();}
-}
-function wxAuto(){
-  const b=document.getElementById('wxautobtn');
-  if(wxTimer){clearInterval(wxTimer);wxTimer=null;b.style.color='#888';b.style.borderColor='#2a2d3a'}
-  else{loadWx();wxTimer=setInterval(loadWx,60000);b.style.color='#7FDDBB';b.style.borderColor='#1D9E75'}
-}
-
-setInterval(poll,2000);poll();
+loadFeed();
+timer = setInterval(loadFeed, 30000);
 </script></body></html>"""
 
 def main():
