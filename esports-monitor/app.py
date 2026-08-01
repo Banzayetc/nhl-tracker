@@ -1359,7 +1359,14 @@ FEED_GAMES = [
     {"tag": "dota-2",            "label": "Dota2"},
     {"tag": "valorant",          "label": "Valorant"},
 ]
-FEED_MIN_VOL = 100_000                 # порог агрегатного volume события
+FEED_MIN_VOL = 100_000                 # порог агрегатного volume события: кандидат в ленту
+# Нижняя граница «подпороговых» (группа под лентой, показывается по кнопке). Замер по
+# живым данным: gamma отдаёт limit=100 с сортировкой по объёму ↓, и у CS2 выдача
+# упирается в дно на ~$14k — ниже этого список по CS2 молча обрезан, а по LoL нет,
+# т.е. картина стала бы кривой. При $20k видно весь осмысленный кластер ($22–93k,
+# реальные турнирные матчи), а хвост ниже — это рынки, открытые на 12–135 ч вперёд
+# с объёмом $0.1–14k. Менять здесь.
+FEED_LOW_VOL =  20_000
 FEED_GRACE   = 4 * 3600                # сек: начавшийся ≤4ч назад ещё «идёт»
 FEED_TTL     = 25                      # сек: серверный кэш скана (не долбить CLOB)
 # маркеры аутрайта/фьючерса/пропа в СЛУГЕ (у слуга матча их нет — там team-team-дата)
@@ -1517,7 +1524,7 @@ def scan_feed():
                 vol = float(e.get("volume") or 0)
             except Exception:
                 vol = 0.0
-            if vol < FEED_MIN_VOL:
+            if vol < FEED_LOW_VOL:
                 continue                                # список отсортирован ↓ по объёму
             title = e.get("title") or ""
             slug = e.get("slug") or ""
@@ -1575,20 +1582,36 @@ def scan_feed():
                 continue                                # старый (в closed=false висят майские)
             zone, color, vtext = _feed_vol_zone(vol)
             label, rel = _feed_when(gst, now)
+            # подпороговый — ниже FEED_MIN_VOL: объём вне шкалы зон, поэтому зонного
+            # цвета не даём вовсе (иначе $92k читался бы как полноценная серая зона)
+            low = vol < FEED_MIN_VOL
             matches.append({
                 "game": g["label"], "tag": g["tag"],
                 "tournament": _feed_tournament(title),
                 "t1": str(mo[0]), "t2": str(mo[1]),
                 "gst": gst, "start": label, "when": rel,
-                "vol": round(vol), "vol_text": vtext, "zone": zone, "color": color,
-                "depth": _feed_depth(mtk),
+                # у подпороговых — десятая доля: _feed_vol_zone округляет до целых k,
+                # и $99.6k показывался бы как «$100k» прямо под подписью «не дорос до $100k»
+                "vol": round(vol), "vol_text": (("$%.1fk" % (vol / 1000.0)) if low else vtext),
+                "zone": ("low" if low else zone), "color": ("" if low else color),
+                "low": low,
+                # стакан подпороговым не тянем: это 2 запроса в CLOB на матч, а сервер
+                # однопоточный — лишние секунды скана блокируют /cs2feed калькулятора.
+                # Понадобится глубина и здесь — заменить на _feed_depth(mtk).
+                "depth": (None if low else _feed_depth(mtk)),
                 "url": "https://polymarket.com/event/" + slug,
             })
 
-    _feed_moved_mark(matches)                           # пометить перенесённые раньше
-    _feed_zone_mark(matches)                            # пометить вошедших в зелёную зону
-    matches.sort(key=lambda x: x["gst"])                # ближайшие сверху
-    out = {"matches": matches, "count": len(matches),
+    core = [m for m in matches if not m["low"]]         # кандидаты ≥ FEED_MIN_VOL
+    sub  = [m for m in matches if m["low"]]             # подпороговые: FEED_LOW_VOL … FEED_MIN_VOL
+    # триггеры (перенос старта, вход в зелёную) — ТОЛЬКО по кандидатам: подпороговые
+    # ещё не кандидаты, и в память трекеров они не попадают
+    _feed_moved_mark(core)                              # пометить перенесённые раньше
+    _feed_zone_mark(core)                               # пометить вошедших в зелёную зону
+    core.sort(key=lambda x: x["gst"])                   # ближайшие сверху
+    sub.sort(key=lambda x: x["gst"])
+    out = {"matches": core, "count": len(core),
+           "low": sub, "low_count": len(sub),
            "ts": (datetime.now(KYIV).strftime("%H:%M:%S") if KYIV else "")}
     with LOCK:
         _FEED_CACHE["ts"] = now
@@ -1664,6 +1687,13 @@ h1{font-size:18px;font-weight:600;color:var(--strong);margin-bottom:4px;display:
 .depth b{color:var(--db);font-weight:600}
 .depth.thin b{color:var(--thin)}
 .vol{font-size:14px;font-weight:800;padding:4px 11px;border-radius:6px;white-space:nowrap;font-variant-numeric:tabular-nums}
+/* подпороговые: вне шкалы зон — нейтральный чип объёма, пунктирная рамка, без заливки */
+.vol.noz{color:var(--dtxt);background:var(--chip2);border:1px solid var(--chipline2);font-weight:700}
+.lowhead{font-size:11px;color:var(--muted);margin:18px 0 7px 2px}
+.lowhead b{color:var(--legend);font-weight:700;font-size:12px}
+.mrow.low{background:transparent;border-style:dashed;border-left-color:var(--chipline2)}
+.mrow.low .teams{color:var(--muted);font-weight:500}
+.mrow.low .time{font-weight:600}
 .lnk{color:var(--lnk);text-decoration:none;font-size:17px;padding:0 4px;flex:none}
 .lnk:active{opacity:.6}
 .tour{color:var(--muted)}
@@ -1703,6 +1733,7 @@ h1{font-size:16px}
   <button class="auto on" id="autobtn" onclick="toggleAuto()">⏱ Авто: вкл</button>
   <button class="auto on" id="sndbtn" onclick="toggleSnd()" title="Сигнал, если старт матча перенесли на более раннее время">🔔 Звук: вкл</button>
   <button id="ntfbtn" onclick="askNotify()" title="Разрешить всплывающие уведомления о входе матча в зелёную зону">🟢 Уведомления</button>
+  <button class="auto" id="lowbtn" onclick="toggleLow()" title="Показать матчи с объёмом ниже рабочего порога $100k">👁 Ниже $100k: выкл</button>
   <button id="thmbtn" onclick="toggleTheme()" title="Светлая / тёмная тема">🌙 Тёмная</button>
   <span id="status">загрузка…</span>
   <span id="hint" style="display:none"></span>
@@ -1717,6 +1748,11 @@ h1{font-size:16px}
 </div>
 
 <div class="feed" id="feed"><div class="empty">загрузка…</div></div>
+
+<div id="lowwrap" style="display:none">
+  <div class="lowhead"><b>Ниже рабочего порога</b> · объём $20k–100k: до $100k ещё не дорос, но матч может дозреть к перерыву. Зоны на них не считаются, сигналы не срабатывают.</div>
+  <div class="feed" id="lowfeed"></div>
+</div>
 
 <script>
 // ADM=1 — версия владельца (/adm): есть кнопка обновления, звук включён.
@@ -1745,9 +1781,13 @@ function applyTheme(light){
   if(b) b.textContent = light ? '☀ Светлая' : '🌙 Тёмная';
   try{ localStorage.setItem('polymon_theme', light?'light':'dark'); }catch(e){}
 }
-function toggleTheme(){ applyTheme(!isLight()); if(LAST.length) render(LAST); }  // перекрасить: цвета зон инлайновые
+function toggleTheme(){ applyTheme(!isLight());                                  // перекрасить: цвета зон инлайновые
+  if(LAST.length) render(LAST); if(LAST_LOW.length) renderLow(LAST_LOW); }
 
-var LAST = [];                  // последняя лента — чтобы перекрасить без запроса
+var LAST = [], LAST_LOW = [];   // последняя лента — чтобы перекрасить без запроса
+// показывать ли матчи ниже рабочего порога. По умолчанию выкл, выбор запоминается
+var showLow = false;
+try{ showLow = (localStorage.getItem('polymon_low')==='1'); }catch(e){}
 var auto = true, timer = null;
 
 // выбранные матчи (ключ = url события) — живут только в текущей вкладке:
@@ -1879,33 +1919,60 @@ function toggleSel(cb, key){
 function esc(s){return (s||'').replace(/[&<>"]/g,function(c){return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]})}
 function money(v){ if(v==null) return '—'; return '$'+(v>=1000?(v/1000).toFixed(v>=100000?0:1)+'k':v); }
 
+// одна строка ленты. low=true — матч ниже рабочего порога: вне шкалы зон, поэтому без
+// зонного цвета (нейтральный чип объёма, пунктирная рамка, приглушённые команды)
+function rowHtml(m, low){
+  var gc = (isLight()?GAME_L:GAME_D)[m.game] || (isLight()?'#5A6672':'#8893a0');
+  var badge = '<span class="badge" style="color:'+gc+';background:'+gc+'22;border:1px solid '+gc+'55">'+esc(m.game)+'</span>';
+  var live = (m.when==='в игре');
+  var time = '<span class="time'+(live?' live':'')+'">⏰ '+esc(m.start)+'<span class="rel">'+esc(m.when)+'</span></span>';
+  var thin = (m.depth!=null && m.depth<2000);
+  var depth = '<span class="depth'+(thin?' thin':'')+'">стакан <b>'+money(m.depth)+'</b></span>';
+  var zc = low ? null : zoneCol(m);
+  var vol = low ? '<span class="vol noz" title="ниже рабочего порога $100k — зона не считается">'+esc(m.vol_text)+'</span>'
+                : '<span class="vol" style="color:'+zc[0]+';background:'+zc[1]+';border:1px solid '+zc[2]+'">'+esc(m.vol_text)+'</span>';
+  var link = m.url ? '<a class="lnk" href="'+m.url+'" target="_blank" title="Открыть на Polymarket">↗</a>' : '';
+  var tour = m.tournament ? '<span class="tour" style="flex-basis:100%;font-size:12px">🏆 '+esc(m.tournament)+'</span>' : '';
+  var key = m.url || (m.t1+'|'+m.t2);
+  var early = (m.moved_mins!=null) ? '<span class="early">⏱ раньше на '+m.moved_mins+' мин</span>' : '';
+  var zup = (m.zone_up_ts!=null) ? '<span class="zup">🟢 вошёл в зелёную</span>' : '';
+  var on = SEL.has(key);
+  var chk = '<input type="checkbox" class="chk" '+(on?'checked ':'')
+    + 'onchange="toggleSel(this,\'' + esc(key).replace(/'/g,"\\'") + '\')" title="Выделить матч">';
+  return '<div class="mrow'+(on?' sel':'')+(low?' low':'')+'"'
+    + (low ? '' : ' style="border-left-color:'+zc[3]+'"') + '>'
+    + chk
+    + badge
+    + '<span class="teams">'+esc(m.t1)+'<span class="vs">vs</span>'+esc(m.t2)+'</span>'
+    + time + early + zup + depth + vol + link + tour
+    + '</div>';
+}
+
 function render(ms){
   var box = document.getElementById('feed');
   if(!ms || !ms.length){ box.innerHTML='<div class="empty">Нет активных Bo3-матчей ≥ $100k сейчас</div>'; return; }
-  box.innerHTML = ms.map(function(m){
-    var gc = (isLight()?GAME_L:GAME_D)[m.game] || (isLight()?'#5A6672':'#8893a0');
-    var zc = zoneCol(m);
-    var badge = '<span class="badge" style="color:'+gc+';background:'+gc+'22;border:1px solid '+gc+'55">'+esc(m.game)+'</span>';
-    var live = (m.when==='в игре');
-    var time = '<span class="time'+(live?' live':'')+'">⏰ '+esc(m.start)+'<span class="rel">'+esc(m.when)+'</span></span>';
-    var thin = (m.depth!=null && m.depth<2000);
-    var depth = '<span class="depth'+(thin?' thin':'')+'">стакан <b>'+money(m.depth)+'</b></span>';
-    var vol = '<span class="vol" style="color:'+zc[0]+';background:'+zc[1]+';border:1px solid '+zc[2]+'">'+esc(m.vol_text)+'</span>';
-    var link = m.url ? '<a class="lnk" href="'+m.url+'" target="_blank" title="Открыть на Polymarket">↗</a>' : '';
-    var tour = m.tournament ? '<span class="tour" style="flex-basis:100%;font-size:12px">🏆 '+esc(m.tournament)+'</span>' : '';
-    var key = m.url || (m.t1+'|'+m.t2);
-    var early = (m.moved_mins!=null) ? '<span class="early">⏱ раньше на '+m.moved_mins+' мин</span>' : '';
-    var zup = (m.zone_up_ts!=null) ? '<span class="zup">🟢 вошёл в зелёную</span>' : '';
-    var on = SEL.has(key);
-    var chk = '<input type="checkbox" class="chk" '+(on?'checked ':'')
-      + 'onchange="toggleSel(this,\'' + esc(key).replace(/'/g,"\\'") + '\')" title="Выделить матч">';
-    return '<div class="mrow'+(on?' sel':'')+'" style="border-left-color:'+zc[3]+'">'
-      + chk
-      + badge
-      + '<span class="teams">'+esc(m.t1)+'<span class="vs">vs</span>'+esc(m.t2)+'</span>'
-      + time + early + zup + depth + vol + link + tour
-      + '</div>';
-  }).join('');
+  box.innerHTML = ms.map(function(m){ return rowHtml(m, false); }).join('');
+}
+
+// подпороговые: секция ниже основной ленты. Прячется, если выключено кнопкой
+// или если таких матчей сейчас нет.
+function renderLow(ms){
+  var wrap = document.getElementById('lowwrap'), box = document.getElementById('lowfeed');
+  if(!showLow || !ms || !ms.length){ wrap.style.display='none'; box.innerHTML=''; return; }
+  wrap.style.display='';
+  box.innerHTML = ms.map(function(m){ return rowHtml(m, true); }).join('');
+}
+
+function lowLabel(){
+  var b=document.getElementById('lowbtn');
+  b.className='auto'+(showLow?' on':'');
+  b.textContent='👁 Ниже $100k: '+(showLow?'вкл':'выкл');
+}
+function toggleLow(){
+  showLow = !showLow;
+  try{ localStorage.setItem('polymon_low', showLow?'1':'0'); }catch(e){}
+  lowLabel();
+  renderLow(LAST_LOW);          // данные уже есть — перерисовать без запроса
 }
 
 async function loadFeed(){
@@ -1915,12 +1982,14 @@ async function loadFeed(){
     var r = await fetch('/feed'); var d = await r.json();
     var earlier = checkEarlier(d.matches||[]);
     var zoned = checkZone(d.matches||[]);
-    LAST = d.matches||[];
-    render(LAST);
+    LAST = d.matches||[]; LAST_LOW = d.low||[];
+    render(LAST); renderLow(LAST_LOW);
     if(earlier) beep(T_TIME);
     if(zoned) beep(T_ZONE);
     var tm = d.ts || new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
-    st.textContent = (d.matches?d.matches.length:0)+' матчей · обновлено '+tm+(d.error?(' · ошибка: '+d.error):'');
+    st.textContent = (d.matches?d.matches.length:0)+' матчей'
+      + (LAST_LOW.length?(' · '+LAST_LOW.length+' ниже порога'):'')
+      + ' · обновлено '+tm+(d.error?(' · ошибка: '+d.error):'');
   }catch(e){ st.textContent = 'ошибка загрузки'; }
   updHints();
 }
@@ -1941,6 +2010,7 @@ function toggleAuto(){
 if(!ADM){ ['refbtn','autobtn'].forEach(function(id){ var b=document.getElementById(id); if(b) b.remove(); }); }
 applyTheme(isLight());          // подписать кнопку темы под то, что уже применено в <head>
 sndLabel();
+lowLabel();
 updHints();
 loadFeed();
 timer = setInterval(loadFeed, 30000);
