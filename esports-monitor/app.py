@@ -1360,13 +1360,15 @@ FEED_GAMES = [
     {"tag": "valorant",          "label": "Valorant"},
 ]
 FEED_MIN_VOL = 100_000                 # порог агрегатного volume события: кандидат в ленту
-# Нижняя граница «подпороговых» (группа под лентой, показывается по кнопке). Замер по
-# живым данным: gamma отдаёт limit=100 с сортировкой по объёму ↓, и у CS2 выдача
-# упирается в дно на ~$14k — ниже этого список по CS2 молча обрезан, а по LoL нет,
-# т.е. картина стала бы кривой. При $20k видно весь осмысленный кластер ($22–93k,
-# реальные турнирные матчи), а хвост ниже — это рынки, открытые на 12–135 ч вперёд
-# с объёмом $0.1–14k. Менять здесь.
-FEED_LOW_VOL =  20_000
+# Нижняя граница «подпороговых» (группа под лентой, показывается по кнопке).
+# Значение выбрано владельцем: показываем диапазон $50k–$100k.
+# Технический предел снизу (замер на живых данных): gamma отдаёт limit=100 с
+# сортировкой по объёму ↓, и у CS2 выдача упирается в дно на ~$14k — ниже этого
+# список по CS2 молча обрезан, а по LoL нет, картина стала бы кривой. $50k заведомо
+# выше этого предела, покрытие честное по всем четырём играм.
+# Сколько матчей добавлял порог на срезе 01.08: 80k→1, 50k→1, 20k→8, 10k→14, 5k→20.
+# Менять здесь — подписи на странице подставляются из этой константы.
+FEED_LOW_VOL =  50_000
 FEED_GRACE   = 4 * 3600                # сек: начавшийся ≤4ч назад ещё «идёт»
 FEED_TTL     = 25                      # сек: серверный кэш скана (не долбить CLOB)
 # маркеры аутрайта/фьючерса/пропа в СЛУГЕ (у слуга матча их нет — там team-team-дата)
@@ -1590,9 +1592,10 @@ def scan_feed():
                 "tournament": _feed_tournament(title),
                 "t1": str(mo[0]), "t2": str(mo[1]),
                 "gst": gst, "start": label, "when": rel,
-                # у подпороговых — десятая доля: _feed_vol_zone округляет до целых k,
-                # и $99.6k показывался бы как «$100k» прямо под подписью «не дорос до $100k»
-                "vol": round(vol), "vol_text": (("$%.1fk" % (vol / 1000.0)) if low else vtext),
+                # у подпороговых — десятая доля и ОКРУГЛЕНИЕ ВНИЗ: _feed_vol_zone округляет
+                # до целых k, и $99.6k показывался бы как «$100k» прямо под подписью «не
+                # дорос до $100k»; обычное округление до десятых врало бы так же на $99 999.99
+                "vol": round(vol), "vol_text": (("$%.1fk" % (int(vol / 100) / 10.0)) if low else vtext),
                 "zone": ("low" if low else zone), "color": ("" if low else color),
                 "low": low,
                 # стакан подпороговым не тянем: это 2 запроса в CLOB на матч, а сервер
@@ -1733,7 +1736,7 @@ h1{font-size:16px}
   <button class="auto on" id="autobtn" onclick="toggleAuto()">⏱ Авто: вкл</button>
   <button class="auto on" id="sndbtn" onclick="toggleSnd()" title="Сигнал, если старт матча перенесли на более раннее время">🔔 Звук: вкл</button>
   <button id="ntfbtn" onclick="askNotify()" title="Разрешить всплывающие уведомления о входе матча в зелёную зону">🟢 Уведомления</button>
-  <button class="auto" id="lowbtn" onclick="toggleLow()" title="Показать матчи с объёмом ниже рабочего порога $100k">👁 Ниже $100k: выкл</button>
+  <button class="auto" id="lowbtn" onclick="toggleLow()" title="Показать матчи с объёмом ниже рабочего порога $__MINK__k">👁 Ниже $__MINK__k: выкл</button>
   <button id="thmbtn" onclick="toggleTheme()" title="Светлая / тёмная тема">🌙 Тёмная</button>
   <span id="status">загрузка…</span>
   <span id="hint" style="display:none"></span>
@@ -1750,7 +1753,7 @@ h1{font-size:16px}
 <div class="feed" id="feed"><div class="empty">загрузка…</div></div>
 
 <div id="lowwrap" style="display:none">
-  <div class="lowhead"><b>Ниже рабочего порога</b> · объём $20k–100k: до $100k ещё не дорос, но матч может дозреть к перерыву. Зоны на них не считаются, сигналы не срабатывают.</div>
+  <div class="lowhead"><b>Ниже рабочего порога</b> · объём $__LOWK__k–__MINK__k: до $__MINK__k ещё не дорос, но матч может дозреть к перерыву. Зоны на них не считаются, сигналы не срабатывают.</div>
   <div class="feed" id="lowfeed"></div>
 </div>
 
@@ -1758,6 +1761,9 @@ h1{font-size:16px}
 // ADM=1 — версия владельца (/adm): есть кнопка обновления, звук включён.
 // ADM=0 — публичная (/): кнопки обновления нет, звук по умолчанию выключен.
 var ADM = __ADM__;
+// пороги подставляет сервер из FEED_LOW_VOL / FEED_MIN_VOL — чтобы подписи
+// не разъехались с реальным фильтром, когда порог поменяют
+var LOWK = __LOWK__, MINK = __MINK__;
 // цвета игр: на светлой теме те же оттенки не читаются (жёлтый CS2 даёт ~2:1),
 // поэтому для светлой — затемнённые варианты (все ≥4.9:1 на своей подложке)
 var GAME_D = {CS2:'#F5A623', LoL:'#4C9BE0', Dota2:'#E24B4A', Valorant:'#E255A0'};
@@ -1958,15 +1964,19 @@ function render(ms){
 // или если таких матчей сейчас нет.
 function renderLow(ms){
   var wrap = document.getElementById('lowwrap'), box = document.getElementById('lowfeed');
-  if(!showLow || !ms || !ms.length){ wrap.style.display='none'; box.innerHTML=''; return; }
+  if(!showLow){ wrap.style.display='none'; box.innerHTML=''; return; }
   wrap.style.display='';
-  box.innerHTML = ms.map(function(m){ return rowHtml(m, true); }).join('');
+  // кнопка включена, но в диапазоне пусто — так и говорим, иначе клик выглядит
+  // как «ничего не произошло» (диапазон узкий, пустым он будет часто)
+  box.innerHTML = (ms && ms.length)
+    ? ms.map(function(m){ return rowHtml(m, true); }).join('')
+    : '<div class="empty">Сейчас нет матчей в диапазоне $'+LOWK+'k–'+MINK+'k</div>';
 }
 
 function lowLabel(){
   var b=document.getElementById('lowbtn');
   b.className='auto'+(showLow?' on':'');
-  b.textContent='👁 Ниже $100k: '+(showLow?'вкл':'выкл');
+  b.textContent='👁 Ниже $'+MINK+'k: '+(showLow?'вкл':'выкл');
 }
 function toggleLow(){
   showLow = !showLow;
@@ -2018,8 +2028,11 @@ timer = setInterval(loadFeed, 30000);
 
 def page(adm):
     """Одна страница на обе версии: /adm — владельцу (кнопка обновления, звук вкл),
-    / — публичная (без кнопки, звук выкл). Разница только во флаге ADM."""
-    return PAGE.replace("__ADM__", "1" if adm else "0")
+    / — публичная (без кнопки, звук выкл). Разница только во флаге ADM.
+    Пороги подставляются из констант, чтобы подписи не разъехались с фильтром."""
+    return (PAGE.replace("__ADM__", "1" if adm else "0")
+                .replace("__LOWK__", str(FEED_LOW_VOL // 1000))
+                .replace("__MINK__", str(FEED_MIN_VOL // 1000)))
 
 def main():
     server = HTTPServer((HOST, PORT), Handler)
