@@ -24,6 +24,7 @@ except Exception:
 
 import os
 PORT = int(os.environ.get("PORT", 8765))
+HOST = os.environ.get("HOST", "0.0.0.0")  # default keeps Render behavior; unit sets 127.0.0.1
 
 # Дисциплины bo3.gg
 DISCIPLINES = {
@@ -1423,6 +1424,77 @@ def _feed_jlist(m, key):
     except Exception:
         return []
 
+MOVED_MIN_SHIFT = 60          # сек: меньший сдвиг считаем дрожанием данных
+MOVED_KEEP      = 10 * 60     # сек: сколько держим метку «перенесён раньше»
+_FEED_GST_PREV  = {}          # key -> прошлый gst (между сканами, живёт в сервисе)
+_FEED_MOVED     = {}          # key -> {"mins": N, "ts": unixtime}
+ZONE_KEEP       = 10 * 60     # сек: сколько держим метку «вошёл в зелёную зону»
+_FEED_ZONE_PREV = {}          # key -> прошлая зона
+_FEED_ZONE_UP   = {}          # key -> {"from": zone, "ts": unixtime}
+
+
+def _feed_key(m):
+    return m.get("url") or (m.get("t1", "") + "|" + m.get("t2", ""))
+
+
+def _feed_zone_mark(matches):
+    """Отметить матчи, ВОШЕДШИЕ в зелёную зону (объём ≥ $500k) с прошлого скана.
+    Как и перенос времени — считается на сервере, поэтому не зависит от браузера."""
+    import time as _t
+    now = _t.time()
+    for m in matches:
+        key = _feed_key(m)
+        zone = m.get("zone")
+        prev = _FEED_ZONE_PREV.get(key)
+        if zone == "green" and prev is not None and prev != "green":
+            _FEED_ZONE_UP[key] = {"from": prev, "ts": now}
+        if zone:
+            _FEED_ZONE_PREV[key] = zone
+        zu = _FEED_ZONE_UP.get(key)
+        if zu and (now - zu["ts"]) <= ZONE_KEEP:
+            m["zone_up_ts"] = int(zu["ts"])
+            m["zone_from"] = zu["from"]
+    live = {_feed_key(m) for m in matches}
+    for k in [k for k in _FEED_ZONE_PREV if k not in live]:
+        _FEED_ZONE_PREV.pop(k, None)
+    for k in [k for k, v in _FEED_ZONE_UP.items() if (now - v["ts"]) > ZONE_KEEP]:
+        _FEED_ZONE_UP.pop(k, None)
+    return matches
+
+
+def _feed_moved_mark(matches):
+    """Серверный детект переноса старта на более раннее время. Помнит прошлый gst
+    между сканами, поэтому не зависит от того, открыта ли вкладка в браузере."""
+    import time as _t
+    now = _t.time()
+    for m in matches:
+        key = m.get("url") or (m.get("t1", "") + "|" + m.get("t2", ""))
+        gst = m.get("gst")
+        prev = _FEED_GST_PREV.get(key)
+        if prev is not None and gst is not None and (prev - gst) >= MOVED_MIN_SHIFT:
+            _FEED_MOVED[key] = {"mins": int(round((prev - gst) / 60.0)), "ts": now}
+        if gst is not None:
+            _FEED_GST_PREV[key] = gst
+        mv = _FEED_MOVED.get(key)
+        if mv and (now - mv["ts"]) <= MOVED_KEEP:
+            m["moved_mins"] = mv["mins"]
+            m["moved_ts"] = int(mv["ts"])
+    live = {(m.get("url") or (m.get("t1", "") + "|" + m.get("t2", ""))) for m in matches}
+    for k in [k for k in _FEED_GST_PREV if k not in live]:
+        _FEED_GST_PREV.pop(k, None)
+    for k in [k for k, v in _FEED_MOVED.items() if (now - v["ts"]) > MOVED_KEEP]:
+        _FEED_MOVED.pop(k, None)
+    return matches
+
+
+def _feed_tournament(title):
+    """Турнир — часть заголовка события после первого ' - '
+    (надёжно по CS2/LoL/Dota2/Valorant). 'More Markets' — плейсхолдер, не турнир."""
+    parts = (title or "").split(" - ", 1)
+    t = parts[1].strip() if len(parts) == 2 else ""
+    return "" if t.lower() == "more markets" else t
+
+
 def scan_feed():
     import time as _t
     now = _t.time()
@@ -1502,6 +1574,7 @@ def scan_feed():
             label, rel = _feed_when(gst, now)
             matches.append({
                 "game": g["label"], "tag": g["tag"],
+                "tournament": _feed_tournament(title),
                 "t1": str(mo[0]), "t2": str(mo[1]),
                 "gst": gst, "start": label, "when": rel,
                 "vol": round(vol), "vol_text": vtext, "zone": zone, "color": color,
@@ -1509,6 +1582,8 @@ def scan_feed():
                 "url": "https://polymarket.com/event/" + slug,
             })
 
+    _feed_moved_mark(matches)                           # пометить перенесённые раньше
+    _feed_zone_mark(matches)                            # пометить вошедших в зелёную зону
     matches.sort(key=lambda x: x["gst"])                # ближайшие сверху
     out = {"matches": matches, "count": len(matches),
            "ts": (datetime.now(KYIV).strftime("%H:%M:%S") if KYIV else "")}
@@ -1538,6 +1613,11 @@ h1{font-size:18px;font-weight:600;color:#fff;margin-bottom:4px;display:flex;alig
 .sw{width:11px;height:11px;border-radius:3px;display:inline-block}
 .feed{display:flex;flex-direction:column;gap:7px}
 .mrow{display:flex;align-items:center;gap:11px;flex-wrap:wrap;background:#161a24;border:1px solid #262b38;border-left-width:4px;border-radius:10px;padding:10px 13px}
+.mrow.sel{background:#1b2740;border-color:#4C9BE0;box-shadow:inset 0 0 0 1px #4C9BE033}
+.mrow.sel .teams{color:#cfe6ff}
+.chk{width:17px;height:17px;flex:none;cursor:pointer;accent-color:#4C9BE0;margin:0}
+.early{font-size:11px;font-weight:700;color:#F5A623;background:#2a1f0d;border:1px solid #F5A62366;border-radius:6px;padding:4px 8px;white-space:nowrap}
+.zup{font-size:11px;font-weight:700;color:#7FE3C2;background:#0d2a1e;border:1px solid #1D9E7566;border-radius:6px;padding:4px 8px;white-space:nowrap}
 .badge{font-size:11px;font-weight:800;letter-spacing:.03em;padding:4px 9px;border-radius:6px;min-width:62px;text-align:center;flex:none}
 .teams{font-size:15px;font-weight:600;color:#f0f0f0;flex:1;min-width:150px}
 .teams .vs{color:#5a6472;font-weight:400;font-size:13px;margin:0 5px}
@@ -1560,6 +1640,8 @@ h1{font-size:18px;font-weight:600;color:#fff;margin-bottom:4px;display:flex;alig
 <div class="bar">
   <button onclick="loadFeed()">↻ Обновить</button>
   <button class="auto on" id="autobtn" onclick="toggleAuto()">⏱ Авто: вкл</button>
+  <button class="auto on" id="sndbtn" onclick="toggleSnd()" title="Сигнал, если старт матча перенесли на более раннее время">🔔 Звук: вкл</button>
+  <button id="ntfbtn" onclick="askNotify()" title="Разрешить всплывающие уведомления о входе матча в зелёную зону">🟢 Уведомления</button>
   <span id="status">загрузка…</span>
 </div>
 
@@ -1577,6 +1659,95 @@ h1{font-size:18px;font-weight:600;color:#fff;margin-bottom:4px;display:flex;alig
 var GAME_COL = {CS2:'#F5A623', LoL:'#4C9BE0', Dota2:'#E24B4A', Valorant:'#E255A0'};
 var auto = true, timer = null;
 
+// выбранные матчи (ключ = url события) — живут только в текущей вкладке:
+// переживают авто-обновление и F5, но новая вкладка/окно стартует чистой
+var SEL = new Set();
+try{ localStorage.removeItem('polymon_sel'); }catch(e){}   // подчистка от прежней версии
+try{ SEL = new Set(JSON.parse(sessionStorage.getItem('polymon_sel')||'[]')); }catch(e){}
+// ── сигнал при переносе старта на более раннее время ───────────────────────────
+var snd = true;                 // вкл/выкл звука (кнопка)
+var BEEPED = {};                // key -> moved_ts, по которому уже бипали (без повторов)
+var actx = null;
+
+// tones: массив [частота, задержка]. По умолчанию — сигнал переноса времени.
+// Зелёная зона использует свой набор (восходящее трезвучие), чтобы отличать на слух.
+var T_TIME = [[880,0],[1320,0.18]];              // перенос старта раньше
+var T_ZONE = [[523,0],[659,0.15],[784,0.30]];    // вход в зелёную зону
+function beep(tones){
+  if(!snd) return;
+  try{
+    actx = actx || new (window.AudioContext||window.webkitAudioContext)();
+    if(actx.state === 'suspended') actx.resume();
+    // короткие тона, без голоса
+    (tones || T_TIME).forEach(function(p){
+      var o=actx.createOscillator(), g=actx.createGain();
+      o.type='sine'; o.frequency.value=p[0];
+      o.connect(g); g.connect(actx.destination);
+      var t=actx.currentTime+p[1];
+      g.gain.setValueAtTime(0.0001,t);
+      g.gain.exponentialRampToValueAtTime(0.25,t+0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001,t+0.15);
+      o.start(t); o.stop(t+0.16);
+    });
+  }catch(e){}
+}
+
+function toggleSnd(){
+  snd = !snd;
+  var b=document.getElementById('sndbtn');
+  b.className='auto'+(snd?' on':'');
+  b.textContent='🔔 Звук: '+(snd?'вкл':'выкл');
+  if(snd) beep();               // клик разблокирует аудио в браузере + проверка слышимости
+}
+
+// ── вход в зелёную зону: уведомление браузера + свой звук ──────────────────────
+var ZONED = {};                 // key -> zone_up_ts, по которому уже уведомляли
+function askNotify(){
+  if(!('Notification' in window)) return;
+  if(Notification.permission === 'default') Notification.requestPermission();
+}
+function notifyZone(m){
+  try{
+    if(('Notification' in window) && Notification.permission === 'granted'){
+      var n = new Notification('🟢 Зелёная зона · ' + (m.vol_text||''), {
+        body: (m.game||'') + ' · ' + (m.t1||'') + ' vs ' + (m.t2||'')
+              + (m.tournament ? '\n' + m.tournament : ''),
+        tag: 'zone-' + (m.url||''),          // не плодить дубли по одному матчу
+      });
+      n.onclick = function(){ window.focus(); if(m.url) window.open(m.url,'_blank'); };
+    }
+  }catch(e){}
+}
+// серверный флаг zone_up_ts — уведомляем один раз на событие
+function checkZone(ms){
+  var hit=false;
+  ms.forEach(function(m){
+    if(m.zone_up_ts==null) return;
+    var key=m.url||(m.t1+'|'+m.t2);
+    if(ZONED[key]!==m.zone_up_ts){ ZONED[key]=m.zone_up_ts; notifyZone(m); hit=true; }
+  });
+  return hit;
+}
+
+// перенос определяет СЕРВЕР (помнит время между сканами, даже если вкладка закрыта).
+// здесь только решаем, бипать ли: по каждому событию переноса — один раз.
+function checkEarlier(ms){
+  var hit=false;
+  ms.forEach(function(m){
+    if(m.moved_mins==null || m.moved_ts==null) return;
+    var key=m.url||(m.t1+'|'+m.t2);
+    if(BEEPED[key]!==m.moved_ts){ BEEPED[key]=m.moved_ts; hit=true; }
+  });
+  return hit;
+}
+
+function toggleSel(cb, key){
+  if(cb.checked) SEL.add(key); else SEL.delete(key);
+  try{ sessionStorage.setItem('polymon_sel', JSON.stringify([...SEL])); }catch(e){}
+  var row = cb.closest('.mrow');
+  if(row) row.classList.toggle('sel', cb.checked);
+}
+
 function esc(s){return (s||'').replace(/[&<>"]/g,function(c){return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]})}
 function money(v){ if(v==null) return '—'; return '$'+(v>=1000?(v/1000).toFixed(v>=100000?0:1)+'k':v); }
 
@@ -1592,10 +1763,18 @@ function render(ms){
     var depth = '<span class="depth'+(thin?' thin':'')+'">стакан <b>'+money(m.depth)+'</b></span>';
     var vol = '<span class="vol" style="color:'+m.color+';background:'+m.color+'1e;border:1px solid '+m.color+'55">'+esc(m.vol_text)+'</span>';
     var link = m.url ? '<a class="lnk" href="'+m.url+'" target="_blank" title="Открыть на Polymarket">↗</a>' : '';
-    return '<div class="mrow" style="border-left-color:'+m.color+'">'
+    var tour = m.tournament ? '<span class="tour" style="flex-basis:100%;font-size:12px;color:#8893a0">🏆 '+esc(m.tournament)+'</span>' : '';
+    var key = m.url || (m.t1+'|'+m.t2);
+    var early = (m.moved_mins!=null) ? '<span class="early">⏱ раньше на '+m.moved_mins+' мин</span>' : '';
+    var zup = (m.zone_up_ts!=null) ? '<span class="zup">🟢 вошёл в зелёную</span>' : '';
+    var on = SEL.has(key);
+    var chk = '<input type="checkbox" class="chk" '+(on?'checked ':'')
+      + 'onchange="toggleSel(this,\'' + esc(key).replace(/'/g,"\\'") + '\')" title="Выделить матч">';
+    return '<div class="mrow'+(on?' sel':'')+'" style="border-left-color:'+m.color+'">'
+      + chk
       + badge
       + '<span class="teams">'+esc(m.t1)+'<span class="vs">vs</span>'+esc(m.t2)+'</span>'
-      + time + depth + vol + link
+      + time + early + zup + depth + vol + link + tour
       + '</div>';
   }).join('');
 }
@@ -1605,7 +1784,11 @@ async function loadFeed(){
   st.textContent = 'загрузка…';
   try{
     var r = await fetch('/feed'); var d = await r.json();
+    var earlier = checkEarlier(d.matches||[]);
+    var zoned = checkZone(d.matches||[]);
     render(d.matches||[]);
+    if(earlier) beep(T_TIME);
+    if(zoned) beep(T_ZONE);
     var tm = d.ts || new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
     st.textContent = (d.matches?d.matches.length:0)+' матчей · обновлено '+tm+(d.error?(' · ошибка: '+d.error):'');
   }catch(e){ st.textContent = 'ошибка загрузки'; }
@@ -1625,7 +1808,7 @@ timer = setInterval(loadFeed, 30000);
 </script></body></html>"""
 
 def main():
-    server = HTTPServer(("0.0.0.0", PORT), Handler)
+    server = HTTPServer((HOST, PORT), Handler)
     url = f"http://0.0.0.0:{PORT}"
     print(f"\n  Esports Bo3 Monitor — CS2 / Dota 2 / Valorant")
     print(f"  Браузер: {url}")
