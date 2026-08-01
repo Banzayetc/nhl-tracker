@@ -766,7 +766,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/" or self.path.startswith("/index"):
-            self._send(200, "text/html; charset=utf-8", PAGE)
+            self._send(200, "text/html; charset=utf-8", page(False))
+        elif self.path.startswith("/adm"):
+            # версия владельца. Это НЕ защита — просто другой адрес, без пароля
+            self._send(200, "text/html; charset=utf-8", page(True))
         elif self.path == "/ping":
             self._send(200, "text/plain", "pong")
         elif self.path.startswith("/pm"):
@@ -1595,68 +1598,156 @@ def scan_feed():
 PAGE = r"""<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Live Esports · Polymarket</title>
+<script>/* тему ставим ДО отрисовки — иначе моргает тёмным при светлой */
+try{if(localStorage.getItem('polymon_theme')==='light')document.documentElement.className='light';}catch(e){}</script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e0e0e0;min-height:100vh;padding:16px;max-width:1100px;margin:0 auto}
-h1{font-size:18px;font-weight:600;color:#fff;margin-bottom:4px;display:flex;align-items:center;gap:9px}
-.dot{width:9px;height:9px;border-radius:50%;background:#1D9E75;animation:p 1.6s infinite}
+/* Тема: переменные. :root — тёмная (как было, hex не менялись), :root.light — светлая.
+   Светлые пары подобраны по контрасту: текст чипа ≥4.5:1, полоса/свотч ≥3:1 (WCAG). */
+:root{
+--bg:#0f1117;--card:#161a24;--line:#262b38;--txt:#e0e0e0;--strong:#fff;--teams:#f0f0f0;
+--muted:#8893a0;--legend:#a8b3c0;--dim:#667;--vs:#5a6472;--status:#8aa0b0;
+--chip:#0e1420;--chip2:#12151f;--chipline:#2f3a4a;--chipline2:#2a3140;
+--dtxt:#9fb0c2;--db:#cdd8e5;--thin:#e0a05a;--rel:#8492a6;
+--btn:#13212e;--btnline:#2a3d4a;--btntxt:#9fcdf0;
+--on:#11251c;--online:#1D9E75;--ontxt:#7FDDBB;
+--live:#7FE3C2;--livebg:#0d2a1e;--liveline:#1D9E7566;
+--early:#F5A623;--earlybg:#2a1f0d;--earlyline:#F5A62366;
+--zup:#7FE3C2;--zupbg:#0d2a1e;--zupline:#1D9E7566;
+--selbg:#1b2740;--selline:#4C9BE0;--selteams:#cfe6ff;--acc:#4C9BE0;
+--lnk:#5BA3E0;--warn:#F5A623;--warnbg:#2a1f0d;--warnline:#F5A62366;
+--swg:#8893a0;--swy:#D9A441;--swgr:#1D9E75}
+:root.light{
+--bg:#F4F6F8;--card:#FFFFFF;--line:#D8DEE6;--txt:#16202C;--strong:#16202C;--teams:#16202C;
+--muted:#5A6672;--legend:#3E4A57;--dim:#5A6672;--vs:#6B7684;--status:#5A6672;
+--chip:#F1F4F7;--chip2:#F1F4F7;--chipline:#CFD7E0;--chipline2:#CFD7E0;
+--dtxt:#4A5765;--db:#16202C;--thin:#8A4B00;--rel:#5A6672;
+--btn:#EAF1F8;--btnline:#B9CBDD;--btntxt:#1B5E92;
+--on:#E1F5EE;--online:#0E8A66;--ontxt:#0B6B4F;
+--live:#0B6B4F;--livebg:#E1F5EE;--liveline:#7FD0B5;
+--early:#7A5200;--earlybg:#FBF1D6;--earlyline:#E0BC60;
+--zup:#0B6B4F;--zupbg:#E1F5EE;--zupline:#7FD0B5;
+--selbg:#EAF2FC;--selline:#2B6CB0;--selteams:#16202C;--acc:#2B6CB0;
+--lnk:#1B6FB8;--warn:#8A4B00;--warnbg:#FCF0DA;--warnline:#E0BC60;
+--swg:#6B7B8C;--swy:#B8860B;--swgr:#0E8A66}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--txt);min-height:100vh;padding:16px;max-width:1100px;margin:0 auto}
+h1{font-size:18px;font-weight:600;color:var(--strong);margin-bottom:4px;display:flex;align-items:center;gap:9px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--online);animation:p 1.6s infinite}
 @keyframes p{0%,100%{opacity:1}50%{opacity:.25}}
-.sub{font-size:12px;color:#667;margin:0 0 14px 18px}
+.sub{font-size:12px;color:var(--dim);margin:0 0 14px 18px}
 .bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
-.bar button{background:#13212e;border:1px solid #2a3d4a;color:#9fcdf0;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px;font-weight:500}
+.bar button{background:var(--btn);border:1px solid var(--btnline);color:var(--btntxt);border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px;font-weight:500}
 .bar button:active{opacity:.7}
-.bar .auto.on{background:#11251c;border-color:#1D9E75;color:#7FDDBB}
-#status{font-size:12px;color:#8aa0b0}
-.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:#8893a0;margin-bottom:14px;align-items:center}
-.legend b{color:#a8b3c0;font-weight:600}
+.bar .auto.on{background:var(--on);border-color:var(--online);color:var(--ontxt)}
+#status{font-size:12px;color:var(--status)}
+#hint{font-size:11px;font-weight:600;color:var(--warn);background:var(--warnbg);border:1px solid var(--warnline);border-radius:6px;padding:5px 9px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-bottom:14px;align-items:center}
+.legend b{color:var(--legend);font-weight:600}
 .lg{display:inline-flex;align-items:center;gap:5px}
 .sw{width:11px;height:11px;border-radius:3px;display:inline-block}
+.sw.zg{background:var(--swg)}.sw.zy{background:var(--swy)}.sw.zgr{background:var(--swgr)}
 .feed{display:flex;flex-direction:column;gap:7px}
-.mrow{display:flex;align-items:center;gap:11px;flex-wrap:wrap;background:#161a24;border:1px solid #262b38;border-left-width:4px;border-radius:10px;padding:10px 13px}
-.mrow.sel{background:#1b2740;border-color:#4C9BE0;box-shadow:inset 0 0 0 1px #4C9BE033}
-.mrow.sel .teams{color:#cfe6ff}
-.chk{width:17px;height:17px;flex:none;cursor:pointer;accent-color:#4C9BE0;margin:0}
-.early{font-size:11px;font-weight:700;color:#F5A623;background:#2a1f0d;border:1px solid #F5A62366;border-radius:6px;padding:4px 8px;white-space:nowrap}
-.zup{font-size:11px;font-weight:700;color:#7FE3C2;background:#0d2a1e;border:1px solid #1D9E7566;border-radius:6px;padding:4px 8px;white-space:nowrap}
+.mrow{display:flex;align-items:center;gap:11px;flex-wrap:wrap;background:var(--card);border:1px solid var(--line);border-left-width:4px;border-radius:10px;padding:10px 13px}
+.mrow.sel{background:var(--selbg);border-color:var(--selline);box-shadow:inset 0 0 0 1px var(--selline)}
+.mrow.sel .teams{color:var(--selteams)}
+.chk{width:17px;height:17px;flex:none;cursor:pointer;accent-color:var(--acc);margin:0}
+.early{font-size:11px;font-weight:700;color:var(--early);background:var(--earlybg);border:1px solid var(--earlyline);border-radius:6px;padding:4px 8px;white-space:nowrap}
+.zup{font-size:11px;font-weight:700;color:var(--zup);background:var(--zupbg);border:1px solid var(--zupline);border-radius:6px;padding:4px 8px;white-space:nowrap}
 .badge{font-size:11px;font-weight:800;letter-spacing:.03em;padding:4px 9px;border-radius:6px;min-width:62px;text-align:center;flex:none}
-.teams{font-size:15px;font-weight:600;color:#f0f0f0;flex:1;min-width:150px}
-.teams .vs{color:#5a6472;font-weight:400;font-size:13px;margin:0 5px}
-.time{font-size:15px;font-weight:700;color:#fff;background:#0e1420;border:1px solid #2f3a4a;border-radius:7px;padding:5px 11px;white-space:nowrap;font-variant-numeric:tabular-nums}
-.time .rel{font-size:11px;font-weight:500;color:#8492a6;margin-left:6px}
-.time.live{color:#7FE3C2;border-color:#1D9E7566;background:#0d2a1e}
-.time.live .rel{color:#7FDDBB}
-.depth{font-size:12px;color:#9fb0c2;background:#12151f;border:1px solid #2a3140;border-radius:6px;padding:4px 9px;white-space:nowrap}
-.depth b{color:#cdd8e5;font-weight:600}
-.depth.thin b{color:#e0a05a}
+.teams{font-size:15px;font-weight:600;color:var(--teams);flex:1;min-width:150px;overflow-wrap:anywhere}
+.teams .vs{color:var(--vs);font-weight:400;font-size:13px;margin:0 5px}
+.time{font-size:15px;font-weight:700;color:var(--strong);background:var(--chip);border:1px solid var(--chipline);border-radius:7px;padding:5px 11px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.time .rel{font-size:11px;font-weight:500;color:var(--rel);margin-left:6px}
+.time.live{color:var(--live);border-color:var(--liveline);background:var(--livebg)}
+.time.live .rel{color:var(--live)}
+.depth{font-size:12px;color:var(--dtxt);background:var(--chip2);border:1px solid var(--chipline2);border-radius:6px;padding:4px 9px;white-space:nowrap}
+.depth b{color:var(--db);font-weight:600}
+.depth.thin b{color:var(--thin)}
 .vol{font-size:14px;font-weight:800;padding:4px 11px;border-radius:6px;white-space:nowrap;font-variant-numeric:tabular-nums}
-.lnk{color:#5BA3E0;text-decoration:none;font-size:17px;padding:0 4px;flex:none}
+.lnk{color:var(--lnk);text-decoration:none;font-size:17px;padding:0 4px;flex:none}
 .lnk:active{opacity:.6}
-.empty{font-size:13px;color:#556;font-style:italic;padding:24px;text-align:center}
-@media(max-width:560px){.teams{min-width:100%;order:5}.badge{order:1}.time{order:2}.vol{order:3}.depth{order:4}.lnk{order:6;margin-left:auto}}
+.tour{color:var(--muted)}
+.empty{font-size:13px;color:var(--muted);font-style:italic;padding:24px;text-align:center}
+/* ≤768px (планшет и уже): пальцем попадать по стрелке 21px неудобно — поднимаем зоны */
+@media(max-width:768px){
+.bar button{min-height:38px}
+.chk{width:19px;height:19px}
+.lnk{display:inline-flex;align-items:center;justify-content:center;min-width:36px;min-height:36px;padding:0}}
+/* ≤560px: строка перестраивается в две — команды отдельной строкой. Порядок задан ВСЕМ
+   элементам: без этого плашки early/zup/tour (order:0) уезжали вперёд бейджа игры. */
+@media(max-width:560px){.chk{order:0}.badge{order:1}.time{order:2}.vol{order:3}.depth{order:4}
+.teams{min-width:calc(100% - 47px);order:5}.lnk{order:6;margin-left:auto}.early{order:7}.zup{order:8}.tour{order:9}}
+/* ≤430px (360/390 px телефоны): ужимаем чипы, увеличиваем тапабельные зоны */
+@media(max-width:430px){
+body{padding:12px 10px}
+h1{font-size:16px}
+.sub{font-size:11px;margin:0 0 12px 0}
+.bar{gap:7px}
+.bar button{padding:9px 11px;font-size:12px;min-height:40px}
+.legend{gap:9px;margin-bottom:12px}
+.mrow{gap:7px;padding:9px 10px}
+.badge{min-width:52px;font-size:10px;padding:4px 7px}
+.teams{font-size:14px}
+.time{font-size:13px;padding:4px 8px}
+.time .rel{font-size:10px;margin-left:4px}
+.depth,.early,.zup{font-size:10px;padding:3px 7px}
+.vol{font-size:13px;padding:4px 9px}
+.chk{width:20px;height:20px}
+.lnk{display:inline-flex;align-items:center;justify-content:center;min-width:40px;min-height:40px;font-size:20px;padding:0}}
 </style></head><body>
 <h1><div class="dot"></div> Live Esports · Polymarket</h1>
 <div class="sub">CS2 · LoL · Dota2 · Valorant — только Bo3 команда-vs-команда, объём ≥ $100k, идущие и ближайшие</div>
 
 <div class="bar">
-  <button onclick="loadFeed()">↻ Обновить</button>
+  <button id="refbtn" onclick="loadFeed()">↻ Обновить</button>
   <button class="auto on" id="autobtn" onclick="toggleAuto()">⏱ Авто: вкл</button>
   <button class="auto on" id="sndbtn" onclick="toggleSnd()" title="Сигнал, если старт матча перенесли на более раннее время">🔔 Звук: вкл</button>
   <button id="ntfbtn" onclick="askNotify()" title="Разрешить всплывающие уведомления о входе матча в зелёную зону">🟢 Уведомления</button>
+  <button id="thmbtn" onclick="toggleTheme()" title="Светлая / тёмная тема">🌙 Тёмная</button>
   <span id="status">загрузка…</span>
+  <span id="hint" style="display:none"></span>
 </div>
 
 <div class="legend">
   <b>Объём:</b>
-  <span class="lg"><span class="sw" style="background:#8893a0"></span> $100k–200k</span>
-  <span class="lg"><span class="sw" style="background:#D9A441"></span> $200k–500k</span>
-  <span class="lg"><span class="sw" style="background:#1D9E75"></span> ≥ $500k</span>
-  <span style="color:#556">·  время киевское · «стакан» = глубина match-winner на ±12¢</span>
+  <span class="lg"><span class="sw zg"></span> $100k–200k</span>
+  <span class="lg"><span class="sw zy"></span> $200k–500k</span>
+  <span class="lg"><span class="sw zgr"></span> ≥ $500k</span>
+  <span>·  время киевское · «стакан» = глубина match-winner на ±12¢</span>
 </div>
 
 <div class="feed" id="feed"><div class="empty">загрузка…</div></div>
 
 <script>
-var GAME_COL = {CS2:'#F5A623', LoL:'#4C9BE0', Dota2:'#E24B4A', Valorant:'#E255A0'};
+// ADM=1 — версия владельца (/adm): есть кнопка обновления, звук включён.
+// ADM=0 — публичная (/): кнопки обновления нет, звук по умолчанию выключен.
+var ADM = __ADM__;
+// цвета игр: на светлой теме те же оттенки не читаются (жёлтый CS2 даёт ~2:1),
+// поэтому для светлой — затемнённые варианты (все ≥4.9:1 на своей подложке)
+var GAME_D = {CS2:'#F5A623', LoL:'#4C9BE0', Dota2:'#E24B4A', Valorant:'#E255A0'};
+var GAME_L = {CS2:'#8A5A00', LoL:'#1A5F96', Dota2:'#B02322', Valorant:'#A8226B'};
+// зоны объёма: [текст, фон чипа, рамка чипа, полоса слева]. Пороги задаёт СЕРВЕР
+// (поле zone), фронт только красит — контракт /feed не меняется, m.color = fallback.
+var ZONE_D = {gray:  ['#8893a0','#8893a01e','#8893a055','#8893a0'],
+              yellow:['#D9A441','#D9A4411e','#D9A44155','#D9A441'],
+              green: ['#1D9E75','#1D9E751e','#1D9E7555','#1D9E75']};
+var ZONE_L = {gray:  ['#42505F','#EDF0F3','#C7D0DA','#6B7B8C'],
+              yellow:['#7A5200','#FBF1D6','#E0BC60','#B8860B'],
+              green: ['#0B6B4F','#E1F5EE','#7FD0B5','#0E8A66']};
+function isLight(){ return document.documentElement.classList.contains('light'); }
+function zoneCol(m){
+  var t = (isLight()?ZONE_L:ZONE_D)[m.zone];
+  return t || [m.color, m.color+'1e', m.color+'55', m.color];   // незнакомая зона — цвет с сервера
+}
+function applyTheme(light){
+  document.documentElement.classList.toggle('light', light);
+  var b=document.getElementById('thmbtn');
+  if(b) b.textContent = light ? '☀ Светлая' : '🌙 Тёмная';
+  try{ localStorage.setItem('polymon_theme', light?'light':'dark'); }catch(e){}
+}
+function toggleTheme(){ applyTheme(!isLight()); if(LAST.length) render(LAST); }  // перекрасить: цвета зон инлайновые
+
+var LAST = [];                  // последняя лента — чтобы перекрасить без запроса
 var auto = true, timer = null;
 
 // выбранные матчи (ключ = url события) — живут только в текущей вкладке:
@@ -1665,14 +1756,17 @@ var SEL = new Set();
 try{ localStorage.removeItem('polymon_sel'); }catch(e){}   // подчистка от прежней версии
 try{ SEL = new Set(JSON.parse(sessionStorage.getItem('polymon_sel')||'[]')); }catch(e){}
 // ── сигнал при переносе старта на более раннее время ───────────────────────────
-var snd = true;                 // вкл/выкл звука (кнопка)
+var snd = !!ADM;                // вкл/выкл звука (кнопка). На публичной / — выкл по умолчанию
 var BEEPED = {};                // key -> moved_ts, по которому уже бипали (без повторов)
 var actx = null;
 
 // tones: массив [частота, задержка]. По умолчанию — сигнал переноса времени.
 // Зелёная зона использует свой набор (восходящее трезвучие), чтобы отличать на слух.
-var T_TIME = [[880,0],[1320,0.18]];              // перенос старта раньше
-var T_ZONE = [[523,0],[659,0.15],[784,0.30]];    // вход в зелёную зону
+var T_TIME = [[880,0],[1320,0.22]];              // перенос старта раньше
+var T_ZONE = [[523,0],[659,0.20],[784,0.40]];    // вход в зелёную зону
+// PEAK 0.5 (было 0.25, +6 дБ) и хвост 0.42с (было 0.15с) — было слишком тихо и коротко.
+// Не 1.0: тона накладываются, сумма двух пиков не должна выходить за 1.0 (клиппинг).
+var PEAK = 0.5, TAIL = 0.42;
 function beep(tones){
   if(!snd) return;
   try{
@@ -1685,26 +1779,60 @@ function beep(tones){
       o.connect(g); g.connect(actx.destination);
       var t=actx.currentTime+p[1];
       g.gain.setValueAtTime(0.0001,t);
-      g.gain.exponentialRampToValueAtTime(0.25,t+0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001,t+0.15);
-      o.start(t); o.stop(t+0.16);
+      g.gain.exponentialRampToValueAtTime(PEAK,t+0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001,t+TAIL);
+      o.start(t); o.stop(t+TAIL+0.01);
     });
   }catch(e){}
 }
 
-function toggleSnd(){
-  snd = !snd;
+// браузер держит AudioContext спящим, пока по странице не кликнули. Будим на первом
+// же клике по чему угодно — иначе сигнал молча не звучит (владелец на это напоролся).
+function unlockAudio(){
+  try{
+    actx = actx || new (window.AudioContext||window.webkitAudioContext)();
+    if(actx.state === 'suspended') actx.resume().then(updHints, function(){});
+  }catch(e){}
+  updHints();
+}
+document.addEventListener('pointerdown', unlockAudio);
+
+function sndLabel(){
   var b=document.getElementById('sndbtn');
   b.className='auto'+(snd?' on':'');
   b.textContent='🔔 Звук: '+(snd?'вкл':'выкл');
+}
+function toggleSnd(){
+  snd = !snd;
+  sndLabel();
   if(snd) beep();               // клик разблокирует аудио в браузере + проверка слышимости
+  updHints();
+}
+
+// видимая причина, почему сигнала может не быть: звук выключен / аудио не разбужено /
+// уведомления не разрешены. Молча не работать — нельзя.
+function updHints(){
+  var h=document.getElementById('hint'); if(!h) return;
+  var w=[];
+  if(!snd) w.push('звук выкл');
+  else if(!(actx && actx.state==='running')) w.push('аудио заблокировано браузером — кликните по странице');
+  if('Notification' in window){
+    if(Notification.permission==='denied') w.push('уведомления запрещены в настройках браузера');
+    else if(Notification.permission!=='granted') w.push('уведомления не разрешены — нажмите «Уведомления»');
+  }
+  h.textContent = w.length ? '⚠ '+w.join(' · ') : '';
+  h.style.display = w.length ? '' : 'none';
 }
 
 // ── вход в зелёную зону: уведомление браузера + свой звук ──────────────────────
 var ZONED = {};                 // key -> zone_up_ts, по которому уже уведомляли
 function askNotify(){
   if(!('Notification' in window)) return;
-  if(Notification.permission === 'default') Notification.requestPermission();
+  if(Notification.permission === 'default'){
+    var p = Notification.requestPermission();
+    if(p && p.then) p.then(updHints); else setTimeout(updHints, 500);
+  }
+  updHints();
 }
 function notifyZone(m){
   try{
@@ -1755,22 +1883,23 @@ function render(ms){
   var box = document.getElementById('feed');
   if(!ms || !ms.length){ box.innerHTML='<div class="empty">Нет активных Bo3-матчей ≥ $100k сейчас</div>'; return; }
   box.innerHTML = ms.map(function(m){
-    var gc = GAME_COL[m.game] || '#8893a0';
+    var gc = (isLight()?GAME_L:GAME_D)[m.game] || (isLight()?'#5A6672':'#8893a0');
+    var zc = zoneCol(m);
     var badge = '<span class="badge" style="color:'+gc+';background:'+gc+'22;border:1px solid '+gc+'55">'+esc(m.game)+'</span>';
     var live = (m.when==='в игре');
     var time = '<span class="time'+(live?' live':'')+'">⏰ '+esc(m.start)+'<span class="rel">'+esc(m.when)+'</span></span>';
     var thin = (m.depth!=null && m.depth<2000);
     var depth = '<span class="depth'+(thin?' thin':'')+'">стакан <b>'+money(m.depth)+'</b></span>';
-    var vol = '<span class="vol" style="color:'+m.color+';background:'+m.color+'1e;border:1px solid '+m.color+'55">'+esc(m.vol_text)+'</span>';
+    var vol = '<span class="vol" style="color:'+zc[0]+';background:'+zc[1]+';border:1px solid '+zc[2]+'">'+esc(m.vol_text)+'</span>';
     var link = m.url ? '<a class="lnk" href="'+m.url+'" target="_blank" title="Открыть на Polymarket">↗</a>' : '';
-    var tour = m.tournament ? '<span class="tour" style="flex-basis:100%;font-size:12px;color:#8893a0">🏆 '+esc(m.tournament)+'</span>' : '';
+    var tour = m.tournament ? '<span class="tour" style="flex-basis:100%;font-size:12px">🏆 '+esc(m.tournament)+'</span>' : '';
     var key = m.url || (m.t1+'|'+m.t2);
     var early = (m.moved_mins!=null) ? '<span class="early">⏱ раньше на '+m.moved_mins+' мин</span>' : '';
     var zup = (m.zone_up_ts!=null) ? '<span class="zup">🟢 вошёл в зелёную</span>' : '';
     var on = SEL.has(key);
     var chk = '<input type="checkbox" class="chk" '+(on?'checked ':'')
       + 'onchange="toggleSel(this,\'' + esc(key).replace(/'/g,"\\'") + '\')" title="Выделить матч">';
-    return '<div class="mrow'+(on?' sel':'')+'" style="border-left-color:'+m.color+'">'
+    return '<div class="mrow'+(on?' sel':'')+'" style="border-left-color:'+zc[3]+'">'
       + chk
       + badge
       + '<span class="teams">'+esc(m.t1)+'<span class="vs">vs</span>'+esc(m.t2)+'</span>'
@@ -1786,12 +1915,14 @@ async function loadFeed(){
     var r = await fetch('/feed'); var d = await r.json();
     var earlier = checkEarlier(d.matches||[]);
     var zoned = checkZone(d.matches||[]);
-    render(d.matches||[]);
+    LAST = d.matches||[];
+    render(LAST);
     if(earlier) beep(T_TIME);
     if(zoned) beep(T_ZONE);
     var tm = d.ts || new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
     st.textContent = (d.matches?d.matches.length:0)+' матчей · обновлено '+tm+(d.error?(' · ошибка: '+d.error):'');
   }catch(e){ st.textContent = 'ошибка загрузки'; }
+  updHints();
 }
 
 function toggleAuto(){
@@ -1803,9 +1934,19 @@ function toggleAuto(){
   else if(timer){ clearInterval(timer); timer=null; }
 }
 
+// публичная версия: кнопки обновления нет (лента и так тянется раз в 30с)
+if(!ADM){ var _rb=document.getElementById('refbtn'); if(_rb) _rb.remove(); }
+applyTheme(isLight());          // подписать кнопку темы под то, что уже применено в <head>
+sndLabel();
+updHints();
 loadFeed();
 timer = setInterval(loadFeed, 30000);
 </script></body></html>"""
+
+def page(adm):
+    """Одна страница на обе версии: /adm — владельцу (кнопка обновления, звук вкл),
+    / — публичная (без кнопки, звук выкл). Разница только во флаге ADM."""
+    return PAGE.replace("__ADM__", "1" if adm else "0")
 
 def main():
     server = HTTPServer((HOST, PORT), Handler)
