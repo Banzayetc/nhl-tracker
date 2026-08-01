@@ -1926,6 +1926,7 @@ async function loadFeed(){
 }
 
 function toggleAuto(){
+  if(!ADM) return;              // на публичной опрос не выключается ничем: кнопки нет и выключить нечем
   auto = !auto;
   var b = document.getElementById('autobtn');
   b.className = 'auto'+(auto?' on':'');
@@ -1934,8 +1935,10 @@ function toggleAuto(){
   else if(timer){ clearInterval(timer); timer=null; }
 }
 
-// публичная версия: кнопки обновления нет (лента и так тянется раз в 30с)
-if(!ADM){ var _rb=document.getElementById('refbtn'); if(_rb) _rb.remove(); }
+// публичная версия: ни «Обновить», ни «Авто» — опрос просто всегда идёт раз в 30с.
+// «Авто» тут убрана намеренно: выключив её, друг остался бы вообще без способа
+// обновить ленту, и застывший список выглядел бы как «матчей нет».
+if(!ADM){ ['refbtn','autobtn'].forEach(function(id){ var b=document.getElementById(id); if(b) b.remove(); }); }
 applyTheme(isLight());          // подписать кнопку темы под то, что уже применено в <head>
 sndLabel();
 updHints();
