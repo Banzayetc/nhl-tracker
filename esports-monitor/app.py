@@ -752,6 +752,139 @@ def monitor_loop():
 
     push_log("⏹ Монитор остановлен")
 
+# ── /fetch — универсальный исследовательский прокси ───────────────────────────
+# Отдельный контур от /pm: свой ключ FETCH_KEY, ТОЛЬКО из окружения и без дефолта —
+# нет переменной → эндпоинта нет (404). Ключ /pm сюда не годится: он вшит открытым
+# текстом в HTML-калькуляторы. Ходит на любой ВНЕШНИЙ хост, но с SSRF-фильтром:
+# схема http/https + разрешённый IP обязан быть публичным. Иначе через прокси
+# достучались бы до 127.0.0.1 (uphoto :8787, РІЕЛ-монитор) и до метаданных облака.
+# Редиректы проходим сами и проверяем каждый переход. GET /fetch?k=TOKEN&u=<urlencoded url>
+import hmac
+import socket
+import ipaddress
+import urllib.error
+import zlib
+
+FETCH_KEY = os.environ.get("FETCH_KEY") or ""   # пусто → эндпоинт выключен целиком
+FETCH_TIMEOUT = 20                 # сек на КАЖДЫЙ хоп; хватает медленному API, но не висит
+FETCH_MAX_BYTES = 5 * 1024 * 1024  # 5 МБ: JSON-ответы API и HTML-страницы влезают с запасом
+FETCH_MAX_REDIRECTS = 5
+FETCH_RATE_N, FETCH_RATE_WIN = 30, 60   # не больше 30 запросов за 60 сек на ключ
+_FETCH_HITS = []                   # unix-таймстемпы последних запросов (HTTPServer однопоточный)
+
+# Liquipedia по условиям API отдаёт 406 «Gzip encoding is required for API requests»,
+# если не просить сжатие, и требует осмысленный UA с контактом — generic Mozilla там
+# не годится. Wikipedia с тем же UA работает. Просим только gzip; тело распаковываем
+# сами и клиенту отдаём уже развёрнутое, без заголовка Content-Encoding.
+FETCH_HEADERS = {
+    "User-Agent": "BracketReader/1.0 (personal research; contact https://polymon.untitled.com.ua)",
+    "Accept-Encoding": "gzip",
+}
+
+# Условия API Liquipedia: тяжёлые действия (action=parse) — не чаще одного запроса в
+# 2 секунды. Общий лимит 30/60с этого не даёт: 30 запросов подряд уйдут за секунду.
+FETCH_HOST_MIN_GAP = {"liquipedia.net": 2.0}
+_FETCH_LAST = {}                   # ключ хоста → unix-время последнего запроса к нему
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Гасит автоматические редиректы: слепой переход обходит SSRF-проверку."""
+    def redirect_request(self, *a, **kw):
+        return None
+
+_FETCH_OPENER = urllib.request.build_opener(_NoRedirect)
+
+def _fetch_guard(url):
+    """Пускать ли по этому URL. None = можно, иначе строка-причина отказа.
+    Резолвим имя и смотрим на ВСЕ полученные IP, а не на строку хоста."""
+    try:
+        p = urllib.parse.urlparse(url)
+        host, port = p.hostname or "", p.port
+    except ValueError as e:
+        return "bad url: %s" % e
+    if p.scheme not in ("http", "https"):
+        return "scheme not allowed: %s" % (p.scheme or "?")
+    if not host:
+        return "no host"
+    try:
+        infos = socket.getaddrinfo(host, port or (443 if p.scheme == "https" else 80),
+                                   proto=socket.IPPROTO_TCP)
+    except Exception as e:
+        return "dns fail: %s" % e
+    if not infos:
+        return "dns empty"
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        ip = getattr(ip, "ipv4_mapped", None) or ip      # ::ffff:127.0.0.1 → 127.0.0.1
+        # is_global пропускает multicast (проверено на 224.0.0.1) — перечисляем явно
+        if (not ip.is_global or ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return "blocked ip: %s" % ip
+    return None
+
+def _fetch_host_gap(host):
+    """(ключ хоста с ограничением, сколько ещё секунд ждать). Нет ключа → нет ограничения.
+    Поддомены считаем тем же хостом: www.liquipedia.net — та же квота."""
+    host = (host or "").lower()
+    for h in FETCH_HOST_MIN_GAP:
+        if host == h or host.endswith("." + h):
+            return h, max(0.0, FETCH_HOST_MIN_GAP[h] - (time.time() - _FETCH_LAST.get(h, 0.0)))
+    return None, 0.0
+
+def _fetch_open(url):
+    """Открывает URL, редиректы проходим сами, каждый переход — через _fetch_guard.
+    Возвращает (ответ, None) либо (None, причина отказа)."""
+    for _ in range(FETCH_MAX_REDIRECTS + 1):
+        why = _fetch_guard(url)
+        if why:
+            return None, why
+        hkey, wait = _fetch_host_gap(urllib.parse.urlparse(url).hostname)
+        if wait > 0:        # не спим: HTTPServer однопоточный, сон подвесил бы и ленту матча
+            return None, "rate: %s min %.0fs between requests, retry in %.1fs" % (
+                hkey, FETCH_HOST_MIN_GAP[hkey], wait)
+        if hkey:            # отметку ставим ДО запроса: интервал считается от старта к старту
+            _FETCH_LAST[hkey] = time.time()
+        req = urllib.request.Request(url, headers=FETCH_HEADERS)
+        try:
+            return _FETCH_OPENER.open(req, timeout=FETCH_TIMEOUT), None
+        except urllib.error.HTTPError as e:
+            loc = e.headers.get("Location") if e.headers else None
+            if e.code in (301, 302, 303, 307, 308) and loc:
+                e.close()
+                url = urllib.parse.urljoin(url, loc)
+                continue
+            return e, None      # 4xx/5xx отдаём как есть: код и тело нужны исследователю
+        except Exception as e:
+            return None, "fetch fail: %s" % e
+    return None, "too many redirects"
+
+def _fetch_decompress(body, enc):
+    """Разворачивает тело по Content-Encoding. (данные, None) либо (None, причина отказа).
+    Предел FETCH_MAX_BYTES меряем и по РАСПАКОВАННОМУ: иначе сжатая бомба в пару сотен
+    килобайт развернулась бы в память без границы. max_length режет её прямо в декодере."""
+    enc = (enc or "").strip().lower()
+    if enc in ("", "identity"):
+        return body, None
+    if enc == "gzip":
+        wbits = 16 + zlib.MAX_WBITS
+    elif enc == "deflate":
+        wbits = zlib.MAX_WBITS          # zlib-обёртка; голый deflate добираем ниже
+    else:
+        return None, "unsupported content-encoding: %s" % enc
+    try:
+        d = zlib.decompressobj(wbits)
+        out = d.decompress(body, FETCH_MAX_BYTES + 1)
+    except zlib.error as e:
+        if enc != "deflate":
+            return None, "decompress fail: %s" % e
+        try:                            # часть серверов шлёт deflate без zlib-заголовка
+            d = zlib.decompressobj(-zlib.MAX_WBITS)
+            out = d.decompress(body, FETCH_MAX_BYTES + 1)
+        except zlib.error as e2:
+            return None, "decompress fail: %s" % e2
+    if len(out) > FETCH_MAX_BYTES or d.unconsumed_tail:
+        return None, "too large after decompress"
+    return out, None
+
 # ── HTTP сервер ────────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
@@ -783,6 +916,61 @@ class Handler(BaseHTTPRequestHandler):
                 return
             payload = _pm_fetch(u)
             self._send(200, "application/json", json.dumps(payload, ensure_ascii=False))
+        elif self.path.startswith("/fetch"):
+            if not FETCH_KEY:                    # нет переменной окружения → эндпоинта нет
+                self._send(404, "text/plain", "not found")
+                return
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if not hmac.compare_digest((q.get("k", [""])[0]).encode("utf-8", "replace"),
+                                       FETCH_KEY.encode("utf-8")):
+                self._send(403, "application/json", '{"_err":"forbidden"}')
+                return
+            now = time.time()                    # окно частоты считаем ПОСЛЕ ключа,
+            _FETCH_HITS[:] = [t for t in _FETCH_HITS if now - t < FETCH_RATE_WIN]
+            if len(_FETCH_HITS) >= FETCH_RATE_N:  # чтобы чужой шум не выбивал свой же ключ
+                self._send(429, "application/json", '{"_err":"rate limited"}')
+                return
+            _FETCH_HITS.append(now)
+            u = q.get("u", [""])[0]
+            if not u:
+                self._send(400, "application/json", '{"_err":"missing u"}')
+                return
+            resp, why = _fetch_open(u)
+            if why:
+                self._send((429 if why.startswith("rate:") else
+                            502 if why.startswith(("fetch fail", "dns fail")) else 403),
+                           "application/json", json.dumps({"_err": why}, ensure_ascii=False))
+                return
+            body, err, deadline = b"", None, time.time() + FETCH_TIMEOUT
+            try:
+                code = resp.getcode() or 200
+                ctype = resp.headers.get("Content-Type") or "application/octet-stream"
+                cenc = resp.headers.get("Content-Encoding")
+                while len(body) <= FETCH_MAX_BYTES:      # читаем кусками: таймаут сокета
+                    if time.time() > deadline:           # не ограничивает ОБЩЕЕ время, а
+                        err = "read timeout"             # капающий по байту сервер иначе
+                        break                            # висит вечно и держит весь процесс
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    body += chunk
+                resp.close()
+            except Exception as e:
+                err = str(e)
+            if err:
+                self._send(504 if err == "read timeout" else 502, "application/json",
+                           json.dumps({"_err": err}, ensure_ascii=False))
+                return
+            if len(body) > FETCH_MAX_BYTES:              # вышли из цикла по перебору
+                self._send(413, "application/json",
+                           json.dumps({"_err": "too large", "limit": FETCH_MAX_BYTES}, ensure_ascii=False))
+                return
+            body, err = _fetch_decompress(body, cenc)    # gzip просили сами — сами и разворачиваем
+            if err:
+                self._send(413 if err.startswith("too large") else 502, "application/json",
+                           json.dumps({"_err": err, "limit": FETCH_MAX_BYTES}, ensure_ascii=False))
+                return
+            self._send(code, ctype, body)   # Content-Encoding не ставим: тело уже распаковано
         elif self.path.startswith("/cs2feed"):
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             if (q.get("k", [""])[0]) != PM_PROXY_KEY:
