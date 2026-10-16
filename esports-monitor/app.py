@@ -462,6 +462,16 @@ def cs2feed(pm_url, light=False, game="cs2"):
             if b is not None:
                 prematch["t2"] = round(b * 100, 1)
 
+    # ID ТОКЕНОВ CLOB ног конструкции — серия и карта 2, обе стороны в том же порядке, что outcomes и цены.
+    # Калькулятору они нужны для живого стакана по вебсокету: подписка ws/market принимает ТОЛЬКО assets_ids,
+    # по слугу на неё не встать. Рынки уже распарсены выше (tk лежит третьим в кортеже), поэтому запросов
+    # прибавляется НОЛЬ — и в лёгком режиме (&maps=1, без стакана) токены тоже отдаются даром.
+    # ЭТО ДОБАВЛЕНИЕ, А НЕ ЗАМЕНА: ни одно прежнее поле не переименовано и не удалено — в этот прокси
+    # ходят боевые v10/v11, которыми юзер торгует.
+    def _toks(entry):                           # рынка нет (нет серии / нет карты 2) → None, а не падение:
+        tk = entry[2] if entry else None        # старые версии обязаны получить ровно тот же ответ, что и раньше
+        return tk if (isinstance(tk, list) and len(tk) >= 2) else None
+
     try:
         _vol = float(ev.get("volume") or 0)
     except Exception:
@@ -469,7 +479,8 @@ def cs2feed(pm_url, light=False, game="cs2"):
     return {"slug": slug, "t1name": t1name, "t2name": t2name,
             "prices": prices, "prematch": prematch,
             "map1": map1st, "map2": map2st, "series": seriesst, "bo3": bo3,
-            "volume": _vol, "gst": series_gst, "hedge_liq": hedge_liq}
+            "volume": _vol, "gst": series_gst, "hedge_liq": hedge_liq,
+            "toks": {"series": _toks(series), "map2": _toks(map2)}}
 
 def vol_label(vol, game):
     th = VOL_THRESHOLDS[game]
