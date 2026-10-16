@@ -1687,6 +1687,74 @@ def _feed_moved_mark(matches):
     return matches
 
 
+def _feed_unit_winner(m):
+    """Индекс победителя сыгранной карты (0/1) или None, если карта ещё не сыграна.
+    Признак — цена карт-рынка: сыгранная сведена в 0.9995/1.0, несыгранная стоит
+    рыночную. Порог 0.97 — тот же, что у _resolve в cs2feed.
+
+    Поля оракула для этого НЕ годятся, проверено 12.09.2026 на 466 карт-рынках четырёх
+    игр: umaResolutionStatuses приходит СТРОКОЙ, и '[]' в Python истинна — условие по
+    нему выполняется всегда и не проверяет ничего; а umaResolutionStatus у явно сыгранных
+    карт сплошь и рядом None (у Vitality-KOI он стоит на одной карте из трёх сыгранных).
+    Спред тоже не разделяет: 44 несыгранных с узким, 2 сыгранных с широким.
+    Срез: 298 карт выше 0.97 — все со сведённой ценой; 168 ниже 0.90; между 0.90 и 0.97
+    пусто. Пять штук в 0.97-0.999 — сыгранные с чужой заявкой в стакане.
+
+    Чего замер НЕ покрывает: карта, идущая прямо СЕЙЧАС при разгроме. Таких в срезе
+    почти не было, и цена у такой карты теоретически может пробить 0.97 до конца.
+    Отсюда обрыв счёта в _feed_series_score — чтобы одна ошибка не собрала счёт из хвоста."""
+    if not m:
+        return None
+    try:
+        px = [float(x) for x in _feed_jlist(m, "outcomePrices")]
+    except Exception:
+        return None
+    if len(px) < 2 or max(px) <= 0.97:
+        return None
+    return px.index(max(px))
+
+
+def _feed_series_score(unit_win):
+    """Счёт серии: считаем карты ПОДРЯД с первой и обрываемся на первой несыгранной.
+    Без этого дырка (карта 1 не сведена, карты 2-3 сведены) складывает счёт из хвоста
+    и может дать ложные 1:1 — на срезе 12.09.2026 такой матч был один из 36
+    (Valorant: TEC Esports vs All Gamers: карта 1 висит ниже 0.97, карты 2-3 сведены).
+    Цена ошибки односторонняя: счёт занижается, но не врёт. Карты 5 у Polymarket не бывает даже в Bo5, поэтому серия, ушедшая на
+    пятую, так и стоит 2:2 — для окна 1:1 это неважно, оно раньше."""
+    sc = [0, 0]
+    for n in range(1, 6):
+        w = _feed_unit_winner(unit_win.get(n))
+        if w is None:
+            break
+        sc[w] += 1
+    return sc
+
+
+_FEED_TIED = {}               # key -> unixtime первого наблюдения счёта 1:1
+
+
+def _feed_tied_mark(matches):
+    """Bo5 при счёте 1:1 — окно входа. В отличие от переноса старта и зелёной зоны это
+    не событие, а СОСТОЯНИЕ: метка держится, пока счёт 1:1, и снимается, как только
+    сыграна третья карта. Время — по первому наблюдению, в том числе когда матч пришёл
+    в ленту уже на 1:1: после перезапуска сервиса сигнал не должен пропасть."""
+    import time as _t
+    now = _t.time()
+    tied = set()
+    for m in matches:
+        if m.get("bo") != 5 or m.get("score") != [1, 1]:
+            continue
+        key = _feed_key(m)
+        tied.add(key)
+        ts = _FEED_TIED.get(key)
+        if ts is None:
+            ts = _FEED_TIED[key] = now
+        m["tied_ts"] = int(ts)
+    for k in [k for k in _FEED_TIED if k not in tied]:
+        _FEED_TIED.pop(k, None)
+    return matches
+
+
 def _feed_tournament(title):
     """Турнир — часть заголовка события после первого ' - '
     (надёжно по CS2/LoL/Dota2/Valorant). 'More Markets' — плейсхолдер, не турнир."""
@@ -1738,10 +1806,15 @@ def scan_feed():
                     unit_win[int(um.group(1))] = m
                 elif (q.strip() == title.strip()) or ("(bo3)" in ql) or ("(bo5)" in ql):
                     mw = mw or m                        # рынок серии == заголовок / (BOn)
-            # Bo3-детект: есть Map/Game 1 и 2, нет 4/5; иначе Bo1/Bo5 — вон
-            if unit_win.get(4) or unit_win.get(5) or ("(bo5)" in low):
-                continue
-            if not (unit_win.get(1) and unit_win.get(2)):
+            # Формат серии. Bo5 — маркер «(BO5)» в заголовке или рынок карты 4; карты 5 у
+            # Polymarket не бывает даже в Bo5 (замер 12.09.2026 по 264 событиям четырёх игр:
+            # карт-рынки только 1-4), проверка на 5 оставлена страховкой. Bo3 — карты 1 и 2.
+            # Bo1 карт-рынков не имеет вовсе и отсекается здесь же, как и раньше.
+            if ("(bo5)" in low) or unit_win.get(4) or unit_win.get(5):
+                bo = 5
+            elif unit_win.get(1) and unit_win.get(2):
+                bo = 3
+            else:
                 continue
             if mw is None:
                 continue
@@ -1776,7 +1849,8 @@ def scan_feed():
             # цвета не даём вовсе (иначе $92k читался бы как полноценная серая зона)
             low = vol < FEED_MIN_VOL
             matches.append({
-                "game": g["label"], "tag": g["tag"],
+                "game": g["label"], "tag": g["tag"], "bo": bo,
+                "score": _feed_series_score(unit_win),
                 "tournament": _feed_tournament(title),
                 "t1": str(mo[0]), "t2": str(mo[1]),
                 "gst": gst, "start": label, "when": rel,
@@ -1799,6 +1873,7 @@ def scan_feed():
     # ещё не кандидаты, и в память трекеров они не попадают
     _feed_moved_mark(core)                              # пометить перенесённые раньше
     _feed_zone_mark(core)                               # пометить вошедших в зелёную зону
+    _feed_tied_mark(core + sub)                         # пометить Bo5 на счёте 1:1
     core.sort(key=lambda x: x["gst"])                   # ближайшие сверху
     sub.sort(key=lambda x: x["gst"])
     out = {"matches": core, "count": len(core),
@@ -1829,6 +1904,7 @@ try{if(localStorage.getItem('polymon_theme')==='light')document.documentElement.
 --early:#F5A623;--earlybg:#2a1f0d;--earlyline:#F5A62366;
 --zup:#7FE3C2;--zupbg:#0d2a1e;--zupline:#1D9E7566;
 --selbg:#1b2740;--selline:#4C9BE0;--selteams:#cfe6ff;--acc:#4C9BE0;
+--bo5:#C9A6FF;--bo5bg:#2a1c45;--bo5line:#7E5BC4;
 --lnk:#5BA3E0;--warn:#F5A623;--warnbg:#2a1f0d;--warnline:#F5A62366;
 --swg:#8893a0;--swy:#D9A441;--swgr:#1D9E75}
 :root.light{
@@ -1842,6 +1918,7 @@ try{if(localStorage.getItem('polymon_theme')==='light')document.documentElement.
 --early:#7A5200;--earlybg:#FBF1D6;--earlyline:#E0BC60;
 --zup:#0B6B4F;--zupbg:#E1F5EE;--zupline:#7FD0B5;
 --selbg:#EAF2FC;--selline:#2B6CB0;--selteams:#16202C;--acc:#2B6CB0;
+--bo5:#5B2FA8;--bo5bg:#F1EAFC;--bo5line:#B79BE0;
 --lnk:#1B6FB8;--warn:#8A4B00;--warnbg:#FCF0DA;--warnline:#E0BC60;
 --swg:#6B7B8C;--swy:#B8860B;--swgr:#0E8A66}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--txt);min-height:100vh;padding:16px;max-width:1100px;margin:0 auto}
@@ -1868,6 +1945,13 @@ h1{font-size:18px;font-weight:600;color:var(--strong);margin-bottom:4px;display:
 .early{font-size:11px;font-weight:700;color:var(--early);background:var(--earlybg);border:1px solid var(--earlyline);border-radius:6px;padding:4px 8px;white-space:nowrap}
 .zup{font-size:11px;font-weight:700;color:var(--zup);background:var(--zupbg);border:1px solid var(--zupline);border-radius:6px;padding:4px 8px;white-space:nowrap}
 .badge{font-size:11px;font-weight:800;letter-spacing:.03em;padding:4px 9px;border-radius:6px;min-width:62px;text-align:center;flex:none}
+/* Формат серии. Bo5 — КРУПНО и своим цветом: фиолетовый на доске больше нигде не занят
+   (янтарь — перенос старта, зелёный — лайв и зелёная зона, синий — выделение строки).
+   Bo3 — мелко и приглушённо: подпись стоит на каждой строке, чтобы формат не читался
+   по ОТСУТСТВИЮ плашки, но внимание забирает только Bo5. */
+.fmt{font-size:11px;font-weight:700;letter-spacing:.04em;padding:4px 8px;border-radius:6px;flex:none;white-space:nowrap;color:var(--dtxt);background:var(--chip2);border:1px solid var(--chipline2)}
+.tied{font-size:15px;font-weight:900;letter-spacing:.04em;padding:6px 12px;border-radius:8px;flex:none;white-space:nowrap;color:var(--bo5bg);background:var(--bo5);border:2px solid var(--bo5)}
+.fmt.b5{font-size:17px;font-weight:900;letter-spacing:.06em;padding:6px 13px;border-radius:8px;color:var(--bo5);background:var(--bo5bg);border:2px solid var(--bo5line)}
 .teams{font-size:15px;font-weight:600;color:var(--teams);flex:1;min-width:150px;overflow-wrap:anywhere}
 .teams .vs{color:var(--vs);font-weight:400;font-size:13px;margin:0 5px}
 .time{font-size:15px;font-weight:700;color:var(--strong);background:var(--chip);border:1px solid var(--chipline);border-radius:7px;padding:5px 11px;white-space:nowrap;font-variant-numeric:tabular-nums}
@@ -1896,7 +1980,7 @@ h1{font-size:18px;font-weight:600;color:var(--strong);margin-bottom:4px;display:
 .lnk{display:inline-flex;align-items:center;justify-content:center;min-width:36px;min-height:36px;padding:0}}
 /* ≤560px: строка перестраивается в две — команды отдельной строкой. Порядок задан ВСЕМ
    элементам: без этого плашки early/zup/tour (order:0) уезжали вперёд бейджа игры. */
-@media(max-width:560px){.chk{order:0}.badge{order:1}.time{order:2}.vol{order:3}.depth{order:4}
+@media(max-width:560px){.chk{order:0}.badge{order:1}.fmt{order:1}.time{order:2}.tied{order:2}.vol{order:3}.depth{order:4}
 .teams{min-width:calc(100% - 47px);order:5}.lnk{order:6;margin-left:auto}.early{order:7}.zup{order:8}.tour{order:9}}
 /* ≤430px (360/390 px телефоны): ужимаем чипы, увеличиваем тапабельные зоны */
 @media(max-width:430px){
@@ -1908,6 +1992,9 @@ h1{font-size:16px}
 .legend{gap:9px;margin-bottom:12px}
 .mrow{gap:7px;padding:9px 10px}
 .badge{min-width:52px;font-size:10px;padding:4px 7px}
+.fmt{font-size:10px;padding:3px 6px}
+.fmt.b5{font-size:15px;padding:5px 10px;border-width:2px}
+.tied{font-size:13px;padding:5px 9px}
 .teams{font-size:14px}
 .time{font-size:13px;padding:4px 8px}
 .time .rel{font-size:10px;margin-left:4px}
@@ -1917,7 +2004,7 @@ h1{font-size:16px}
 .lnk{display:inline-flex;align-items:center;justify-content:center;min-width:40px;min-height:40px;font-size:20px;padding:0}}
 </style></head><body>
 <h1><div class="dot"></div> Live Esports · Polymarket</h1>
-<div class="sub">CS2 · LoL · Dota2 · Valorant — только Bo3 команда-vs-команда, объём ≥ $100k, идущие и ближайшие</div>
+<div class="sub">CS2 · LoL · Dota2 · Valorant — Bo3 и Bo5 команда-vs-команда, объём ≥ $100k, идущие и ближайшие</div>
 
 <div class="bar">
   <button id="refbtn" onclick="loadFeed()">↻ Обновить</button>
@@ -1998,6 +2085,7 @@ var actx = null;
 // Зелёная зона использует свой набор (восходящее трезвучие), чтобы отличать на слух.
 var T_TIME = [[880,0],[1320,0.22]];              // перенос старта раньше
 var T_ZONE = [[523,0],[659,0.20],[784,0.40]];    // вход в зелёную зону
+var T_TIED = [[988,0],[740,0.22],[988,0.44]];    // Bo5 вышел на 1:1 (контур вниз-вверх)
 // PEAK 0.5 (было 0.25, +6 дБ) и хвост 0.42с (было 0.15с) — было слишком тихо и коротко.
 // Не 1.0: тона накладываются, сумма двух пиков не должна выходить за 1.0 (клиппинг).
 var PEAK = 0.5, TAIL = 0.42;
@@ -2091,6 +2179,32 @@ function checkZone(ms){
   return hit;
 }
 
+// ── Bo5 на счёте 1:1: уведомление браузера + свой звук ────────────────────────
+var TIEDN = {};                 // key -> tied_ts, по которому уже уведомляли
+function notifyTied(m){
+  try{
+    if(('Notification' in window) && Notification.permission === 'granted'){
+      var n = new Notification('⚡ BO5 1:1 · ' + (m.t1||'') + ' vs ' + (m.t2||''), {
+        body: (m.game||'') + ' · третья карта' + (m.vol_text ? ' · ' + m.vol_text : '')
+              + (m.tournament ? '\n' + m.tournament : ''),
+        tag: 'tied-' + (m.url||''),          // не плодить дубли по одному матчу
+      });
+      n.onclick = function(){ window.focus(); if(m.url) window.open(m.url,'_blank'); };
+    }
+  }catch(e){}
+}
+// счёт считает СЕРВЕР по карт-рынкам Polymarket; tied_ts стоит, пока счёт 1:1.
+// здесь только решаем, сигналить ли: по каждому входу в 1:1 — один раз.
+function checkTied(ms){
+  var hit=false;
+  ms.forEach(function(m){
+    if(m.tied_ts==null) return;
+    var key=m.url||(m.t1+'|'+m.t2);
+    if(TIEDN[key]!==m.tied_ts){ TIEDN[key]=m.tied_ts; notifyTied(m); hit=true; }
+  });
+  return hit;
+}
+
 // перенос определяет СЕРВЕР (помнит время между сканами, даже если вкладка закрыта).
 // здесь только решаем, бипать ли: по каждому событию переноса — один раз.
 function checkEarlier(ms){
@@ -2118,6 +2232,8 @@ function money(v){ if(v==null) return '—'; return '$'+(v>=1000?(v/1000).toFixe
 function rowHtml(m, low){
   var gc = (isLight()?GAME_L:GAME_D)[m.game] || (isLight()?'#5A6672':'#8893a0');
   var badge = '<span class="badge" style="color:'+gc+';background:'+gc+'22;border:1px solid '+gc+'55">'+esc(m.game)+'</span>';
+  var fmt = '<span class="fmt'+(m.bo===5?' b5':'')+'">BO'+(m.bo||3)+'</span>';
+  var tied = (m.tied_ts!=null) ? '<span class="tied">⚡ 1:1</span>' : '';
   var live = (m.when==='в игре');
   var time = '<span class="time'+(live?' live':'')+'">⏰ '+esc(m.start)+'<span class="rel">'+esc(m.when)+'</span></span>';
   var thin = (m.depth!=null && m.depth<2000);
@@ -2137,14 +2253,15 @@ function rowHtml(m, low){
     + (low ? '' : ' style="border-left-color:'+zc[3]+'"') + '>'
     + chk
     + badge
+    + fmt
     + '<span class="teams">'+esc(m.t1)+'<span class="vs">vs</span>'+esc(m.t2)+'</span>'
-    + time + early + zup + depth + vol + link + tour
+    + time + tied + early + zup + depth + vol + link + tour
     + '</div>';
 }
 
 function render(ms){
   var box = document.getElementById('feed');
-  if(!ms || !ms.length){ box.innerHTML='<div class="empty">Нет активных Bo3-матчей ≥ $100k сейчас</div>'; return; }
+  if(!ms || !ms.length){ box.innerHTML='<div class="empty">Нет активных матчей ≥ $100k сейчас</div>'; return; }
   box.innerHTML = ms.map(function(m){ return rowHtml(m, false); }).join('');
 }
 
@@ -2180,10 +2297,12 @@ async function loadFeed(){
     var r = await fetch('/feed'); var d = await r.json();
     var earlier = checkEarlier(d.matches||[]);
     var zoned = checkZone(d.matches||[]);
+    var tied  = checkTied(d.matches||[]);
     LAST = d.matches||[]; LAST_LOW = d.low||[];
     render(LAST); renderLow(LAST_LOW);
     if(earlier) beep(T_TIME);
     if(zoned) beep(T_ZONE);
+    if(tied) beep(T_TIED);
     var tm = d.ts || new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
     st.textContent = (d.matches?d.matches.length:0)+' матчей'
       + (LAST_LOW.length?(' · '+LAST_LOW.length+' ниже порога'):'')
