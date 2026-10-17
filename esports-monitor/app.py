@@ -1899,7 +1899,7 @@ PAGE = r"""<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Live Esports · Polymarket</title>
 <script>/* тему ставим ДО отрисовки — иначе моргает тёмным при светлой */
-try{var _t=localStorage.getItem('polymon_theme');if(_t==='light'||_t==='gray')document.documentElement.className=_t;}catch(e){}</script>
+try{var _t=localStorage.getItem('polymon_theme');if(_t==='light'||_t==='gray'||_t==='paper')document.documentElement.className=_t;}catch(e){}</script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 /* Тема: переменные. :root — тёмная (как было, hex не менялись), :root.gray — серая,
@@ -1933,25 +1933,43 @@ try{var _t=localStorage.getItem('polymon_theme');if(_t==='light'||_t==='gray')do
 --bo5:#5B2FA8;--bo5bg:#F1EAFC;--bo5line:#B79BE0;
 --lnk:#1B6FB8;--warn:#8A4B00;--warnbg:#FCF0DA;--warnline:#E0BC60;
 --swg:#6B7B8C;--swy:#B8860B;--swgr:#0E8A66}
-/* серая: фон между тёмной и светлой (#31353D / карточка #3C424C). Акценты НЕ взяты из
-   тёмной — на светлом фоне они просаживались: CS2 #F5A623 давал 4.0:1, LoL #4C9BE0 3.4:1.
-   Здесь осветлённые варианты, все ≥4.5:1 на своей подложке. */
+/* серая: холодный графит — почти чёрный фон с явным синим отливом (#121A28), карточка
+   на тон светлее. От тёмной отличается не столько яркостью, сколько насыщенностью:
+   у тёмной #0F1117 разброс каналов 8, здесь 22. Акценты подняты относительно тёмной —
+   карточка светлее (L* 14 против 9), и на ней LoL #4C9BE0 давал 4.3:1, Dota2 3.5:1. */
 :root.gray{
---bg:#31353D;--card:#3C424C;--line:#4A515C;--txt:#E4E7EB;--strong:#FFFFFF;--teams:#EEF1F4;
---muted:#A6B0BC;--legend:#C8D0DA;--dim:#A6B0BC;--vs:#99A3B1;--status:#A6B0BC;
---chip:#2E333B;--chip2:#2E333B;--chipline:#4A515C;--chipline2:#454C56;
---dtxt:#C6D0DC;--db:#EAF0F6;--thin:#F0B069;--rel:#ADB7C3;
---btn:#2B3A47;--btnline:#44596B;--btntxt:#AEDAFA;
---on:#1E3A30;--online:#2DB88C;--ontxt:#8FE8C6;
---live:#8FE8C6;--livebg:#1E3A30;--liveline:#2DB88C66;
---early:#F7BE57;--earlybg:#423520;--earlyline:#F7BE5766;
---zup:#8FE8C6;--zupbg:#1E3A30;--zupline:#2DB88C66;
---selbg:#39465C;--selline:#6AB0E8;--selteams:#DCE9F7;--acc:#6AB0E8;
-/* Bo5: заливка .fmt.b5 поднята (#4A3D6E вместо тёмного #2a1c45) — на серой карточке
-   тёмная заливка читалась «вдавленной», в тёмной теме она наоборот светлее фона */
---bo5:#C9A6FF;--bo5bg:#4A3D6E;--bo5line:#9A7AE0;
---lnk:#8CC4F0;--warn:#F7BE57;--warnbg:#423520;--warnline:#F7BE5766;
---swg:#A6B0BC;--swy:#E0B055;--swgr:#39C79B}
+--bg:#121A28;--card:#1A2436;--line:#26334A;--txt:#E9EDF3;--strong:#FFFFFF;--teams:#F2F5FA;
+--muted:#8FA0B8;--legend:#B3C2D6;--dim:#8FA0B8;--vs:#8295AD;--status:#8FA0B8;
+--chip:#202C42;--chip2:#202C42;--chipline:#30405C;--chipline2:#2A3850;
+--dtxt:#BCCBDE;--db:#EAF1F9;--thin:#E8A862;--rel:#93A4BB;
+--btn:#1C2A3E;--btnline:#33475F;--btntxt:#9FD0F5;
+--on:#11251C;--online:#1D9E75;--ontxt:#7FDDBB;
+--live:#7FE3C2;--livebg:#0d2a1e;--liveline:#1D9E7566;
+--early:#F5A623;--earlybg:#2a1f0d;--earlyline:#F5A62366;
+--zup:#7FE3C2;--zupbg:#0d2a1e;--zupline:#1D9E7566;
+--selbg:#1b2740;--selline:#4C9BE0;--selteams:#cfe6ff;--acc:#4C9BE0;
+--bo5:#C9A6FF;--bo5bg:#2a1c45;--bo5line:#7E5BC4;
+--lnk:#6FB3EC;--warn:#F5A623;--warnbg:#2a1f0d;--warnline:#F5A62366;
+--swg:#A3B2C4;--swy:#D9A441;--swgr:#3FD3A2}
+/* бумажная: тёплый светлый фон небелёного льна (#F1ECE1), панель чуть светлее и теплее,
+   чипы почти белые с мягкой серой рамкой. Текст тёмно-серый, НЕ чёрный. Акцент —
+   приглушённый синий #3D6B99. Цвета дисциплин/зон взяты тёплые и проверены на ЭТОЙ
+   карточке (#FAF6EE), а не на белой: на тёплой подложке холодные пары светлой темы
+   выглядели инородно, а swy #B8860B просаживался до 2.76:1. */
+:root.paper{
+--bg:#F1ECE1;--card:#FAF6EE;--line:#DED6C7;--txt:#33302A;--strong:#241F18;--teams:#2B2720;
+--muted:#6E675B;--legend:#4A443A;--dim:#6E675B;--vs:#746C5E;--status:#6E675B;
+--chip:#FFFDF8;--chip2:#FFFDF8;--chipline:#D6CDBC;--chipline2:#D6CDBC;
+--dtxt:#514A3E;--db:#241F18;--thin:#8A4B00;--rel:#6E675B;
+--btn:#E7EDF3;--btnline:#BCCBDB;--btntxt:#2F5C87;
+--on:#DDEFE6;--online:#0E8A66;--ontxt:#0B6B4F;
+--live:#0B6B4F;--livebg:#DDEFE6;--liveline:#86CBB0;
+--early:#7A5200;--earlybg:#F6EBCF;--earlyline:#DCBE6E;
+--zup:#0B6B4F;--zupbg:#DDEFE6;--zupline:#86CBB0;
+--selbg:#E6EDF5;--selline:#3D6B99;--selteams:#2B2720;--acc:#3D6B99;
+--bo5:#5B2FA8;--bo5bg:#EFE8FA;--bo5line:#8E6BC6;
+--lnk:#3D6B99;--warn:#7A5200;--warnbg:#F6EBCF;--warnline:#DCBE6E;
+--swg:#6E675B;--swy:#A2740A;--swgr:#0E8A66}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--txt);min-height:100vh;padding:16px;max-width:1100px;margin:0 auto}
 h1{font-size:18px;font-weight:600;color:var(--strong);margin-bottom:4px;display:flex;align-items:center;gap:9px}
 .dot{width:9px;height:9px;border-radius:50%;background:var(--online);animation:p 1.6s infinite}
@@ -2048,7 +2066,7 @@ h1{font-size:16px}
   <button class="auto on" id="sndbtn" onclick="toggleSnd()" title="Сигнал, если старт матча перенесли на более раннее время">🔔 Звук: вкл</button>
   <button id="ntfbtn" onclick="askNotify()" title="Разрешить всплывающие уведомления о входе матча в зелёную зону">🟢 Уведомления</button>
   <button class="auto" id="lowbtn" onclick="toggleLow()" title="Показать матчи с объёмом ниже рабочего порога $__MINK__k">👁 Ниже $__MINK__k: выкл</button>
-  <button id="thmbtn" onclick="toggleTheme()" title="Тема: тёмная → серая → светлая">🌙 Тёмная</button>
+  <button id="thmbtn" onclick="toggleTheme()" title="Тема: тёмная → серая → бумажная → светлая">🌙 Тёмная</button>
   <select id="tzsel" onchange="setTz(this.value)" title="Часовой пояс, в котором показывать время матчей"></select>
   <span id="status">загрузка…</span>
   <span id="hint" style="display:none"></span>
@@ -2080,9 +2098,11 @@ var LOWK = __LOWK__, MINK = __MINK__;
 // поэтому для светлой — затемнённые варианты (все ≥4.9:1 на своей подложке)
 var GAME_D = {CS2:'#F5A623', LoL:'#4C9BE0', Dota2:'#E24B4A', Valorant:'#E255A0'};
 var GAME_L = {CS2:'#8A5A00', LoL:'#1A5F96', Dota2:'#B02322', Valorant:'#A8226B'};
-// серая: подложка карточки светлее тёмной, оттенки GAME_D на ней просаживаются
-// (LoL давал 3.4:1) — осветлённые варианты, все ≥4.5:1 на своей 13%-заливке
-var GAME_G = {CS2:'#FFC061', LoL:'#A3D2F5', Dota2:'#FFB3B1', Valorant:'#FFACD6'};
+// графит: карточка светлее тёмной (L* 14 против 9), оттенки GAME_D на ней просаживаются
+// (LoL 4.3:1, Dota2 3.5:1) — поднятые варианты, все ≥5:1 на своей 13%-заливке
+var GAME_G = {CS2:'#F5A623', LoL:'#6FB3EC', Dota2:'#FF7D7B', Valorant:'#FF77BC'};
+// бумажная: проверены на тёплой карточке #FAF6EE, все ≥4.5:1
+var GAME_P = {CS2:'#8A5A00', LoL:'#1A5F96', Dota2:'#B02322', Valorant:'#A8226B'};
 // зоны объёма: [текст, фон чипа, рамка чипа, полоса слева]. Пороги задаёт СЕРВЕР
 // (поле zone), фронт только красит — контракт /feed не меняется, m.color = fallback.
 var ZONE_D = {gray:  ['#8893a0','#8893a01e','#8893a055','#8893a0'],
@@ -2091,17 +2111,22 @@ var ZONE_D = {gray:  ['#8893a0','#8893a01e','#8893a055','#8893a0'],
 var ZONE_L = {gray:  ['#42505F','#EDF0F3','#C7D0DA','#6B7B8C'],
               yellow:['#7A5200','#FBF1D6','#E0BC60','#B8860B'],
               green: ['#0B6B4F','#E1F5EE','#7FD0B5','#0E8A66']};
-var ZONE_G = {gray:  ['#C9D3DF','#C9D3DF1e','#C9D3DF55','#C9D3DF'],
-              yellow:['#F2C771','#F2C7711e','#F2C77155','#F2C771'],
-              green: ['#8FE8C6','#8FE8C61e','#8FE8C655','#8FE8C6']};
-// три темы по кругу одной кнопкой: тёмная (без класса) → серая (.gray) → светлая (.light)
-var THM     = [['dark','🌙 Тёмная'],['gray','◐ Серая'],['light','☀ Светлая']];
-var GAME    = {dark:GAME_D, gray:GAME_G, light:GAME_L};
-var GAME_FB = {dark:'#8893a0', gray:'#A6B0BC', light:'#5A6672'};   // неизвестная дисциплина
-var ZONE    = {dark:ZONE_D, gray:ZONE_G, light:ZONE_L};
+var ZONE_G = {gray:  ['#A3B2C4','#A3B2C41e','#A3B2C455','#A3B2C4'],
+              yellow:['#D9A441','#D9A4411e','#D9A44155','#D9A441'],
+              green: ['#3FD3A2','#3FD3A21e','#3FD3A255','#3FD3A2']};
+var ZONE_P = {gray:  ['#5A5445','#5A54451e','#5A544555','#5A5445'],
+              yellow:['#7A5200','#7A52001e','#7A520055','#7A5200'],
+              green: ['#0B6B4F','#0B6B4F1e','#0B6B4F55','#0B6B4F']};
+// четыре темы по кругу одной кнопкой, по возрастанию яркости:
+// тёмная (без класса) → серая/графит (.gray) → бумажная (.paper) → светлая (.light)
+var THM     = [['dark','🌙 Тёмная'],['gray','◐ Серая'],['paper','📄 Бумажная'],['light','☀ Светлая']];
+var GAME    = {dark:GAME_D, gray:GAME_G, paper:GAME_P, light:GAME_L};
+var GAME_FB = {dark:'#8893a0', gray:'#A3B2C4', paper:'#6E675B', light:'#5A6672'};  // неизвестная дисциплина
+var ZONE    = {dark:ZONE_D, gray:ZONE_G, paper:ZONE_P, light:ZONE_L};
 function theme(){
   var c = document.documentElement.classList;
-  return c.contains('light') ? 'light' : (c.contains('gray') ? 'gray' : 'dark');
+  for(var i=0;i<THM.length;i++) if(c.contains(THM[i][0])) return THM[i][0];
+  return 'dark';                                     // тёмная живёт без класса
 }
 function zoneCol(m){
   var t = ZONE[theme()][m.zone];
@@ -2109,8 +2134,8 @@ function zoneCol(m){
 }
 function applyTheme(name){
   var c = document.documentElement.classList;
-  c.remove('light'); c.remove('gray');
-  if(name==='light' || name==='gray') c.add(name);
+  THM.forEach(function(p){ if(p[0]!=='dark') c.remove(p[0]); });
+  if(name!=='dark') c.add(name);
   var b=document.getElementById('thmbtn');
   if(b) b.textContent = (THM.filter(function(p){ return p[0]===name; })[0] || THM[0])[1];
   try{ localStorage.setItem('polymon_theme', name); }catch(e){}
@@ -2280,6 +2305,7 @@ function updHints(){
   if('Notification' in window){
     if(Notification.permission==='denied') w.push('уведомления запрещены в настройках браузера');
     else if(Notification.permission!=='granted') w.push('уведомления не разрешены — нажмите «Уведомления»');
+    else if(!ntf) w.push('уведомления выкл');
   }
   h.textContent = w.length ? '⚠ '+w.join(' · ') : '';
   h.style.display = w.length ? '' : 'none';
@@ -2287,13 +2313,38 @@ function updHints(){
 
 // ── вход в зелёную зону: уведомление браузера + свой звук ──────────────────────
 var ZONED = {};                 // key -> zone_up_ts, по которому уже уведомляли
+// ── тумблер уведомлений ───────────────────────────────────────────────────────
+// Раньше кнопка только ЗАПРАШИВАЛА разрешение: когда оно уже выдано, условие не
+// выполнялось и клик не делал ничего — кнопка выглядела живой, но была мёртвой.
+// Теперь это полноценный тумблер по образцу звука: слать уведомления или нет решает
+// САМА СТРАНИЦА. Разрешение браузера при выключении не трогаем — отозвать его сайт
+// всё равно не может. По умолчанию как у звука: на /adm вкл, на публичной выкл;
+// дальше выбор запоминается между перезагрузками (как тема и пояс).
+var ntf = !!ADM;
+try{ var _n = localStorage.getItem('polymon_ntf'); if(_n!==null) ntf = (_n==='1'); }catch(e){}
+function saveNtf(){ try{ localStorage.setItem('polymon_ntf', ntf?'1':'0'); }catch(e){} }
+function ntfOk(){ return ('Notification' in window) && Notification.permission === 'granted'; }
+function ntfOn(){ return ntf && ntfOk(); }        // шлём ли уведомления прямо сейчас
+function ntfLabel(){
+  var b=document.getElementById('ntfbtn'); if(!b) return;
+  var no = !('Notification' in window), den = !no && Notification.permission==='denied';
+  b.className = 'auto'+(ntfOn()?' on':'');        // «вкл» только когда реально сработает
+  b.textContent = no  ? '🔕 Уведомления: не умеет браузер'
+                : den ? '🔕 Уведомления: запрещены'
+                      : '🔔 Уведомления: '+(ntf?'вкл':'выкл');
+  b.title = den ? 'Браузер запретил уведомления для этого сайта — снимается только в его настройках'
+                : 'Всплывающие уведомления: зелёная зона, Bo5 на 1:1, старт в зелёной';
+}
 function askNotify(){
-  if(!('Notification' in window)) return;
-  if(Notification.permission === 'default'){
+  // запрещено браузером или не поддерживается — честно показываем и не притворяемся
+  if(!('Notification' in window) || Notification.permission === 'denied'){ ntfLabel(); updHints(); return; }
+  if(Notification.permission === 'default'){     // разрешения ещё нет — просим, как раньше
     var p = Notification.requestPermission();
-    if(p && p.then) p.then(updHints); else setTimeout(updHints, 500);
+    var done = function(){ ntf = (Notification.permission==='granted'); saveNtf(); ntfLabel(); updHints(); };
+    if(p && p.then) p.then(done); else setTimeout(done, 500);
+    return;
   }
-  updHints();
+  ntf = !ntf; saveNtf(); ntfLabel(); updHints();  // разрешение есть — обычный тумблер
 }
 function notifyZone(m){
   try{
@@ -2313,7 +2364,7 @@ function checkZone(ms){
   ms.forEach(function(m){
     if(m.zone_up_ts==null) return;
     var key=m.url||(m.t1+'|'+m.t2);
-    if(ZONED[key]!==m.zone_up_ts){ ZONED[key]=m.zone_up_ts; notifyZone(m); hit=true; }
+    if(ZONED[key]!==m.zone_up_ts){ ZONED[key]=m.zone_up_ts; if(ntfOn()) notifyZone(m); hit=true; }
   });
   return hit;
 }
@@ -2339,7 +2390,7 @@ function checkTied(ms){
   ms.forEach(function(m){
     if(m.tied_ts==null) return;
     var key=m.url||(m.t1+'|'+m.t2);
-    if(TIEDN[key]!==m.tied_ts){ TIEDN[key]=m.tied_ts; notifyTied(m); hit=true; }
+    if(TIEDN[key]!==m.tied_ts){ TIEDN[key]=m.tied_ts; if(ntfOn()) notifyTied(m); hit=true; }
   });
   return hit;
 }
@@ -2377,7 +2428,7 @@ function checkLiveGreen(ms){
     if(m.when!=='в игре'){ PREGAME[key]=true; return; }   // ещё не начался — ждём старта
     if(!PREGAME[key]) return;                             // перехода не видели (или уже разобрали)
     PREGAME[key]=false;                                   // решение ровно одно — на самом переходе
-    if(m.zone==='green'){ LIVEG[key]=true; notifyLiveGreen(m); hit=true; }
+    if(m.zone==='green'){ LIVEG[key]=true; if(ntfOn()) notifyLiveGreen(m); hit=true; }
   });
   return hit;
 }
@@ -2508,6 +2559,7 @@ function toggleAuto(){
 // обновить ленту, и застывший список выглядел бы как «матчей нет».
 if(!ADM){ ['refbtn','autobtn'].forEach(function(id){ var b=document.getElementById(id); if(b) b.remove(); }); }
 applyTheme(theme());            // подписать кнопку темы под то, что уже применено в <head>
+ntfLabel();
 if(TZ && !tzOk(TZ)) TZ='';      // в localStorage мог остаться пояс, которого нет в этом браузере
 tzOpts(); tzLabel();
 sndLabel();
