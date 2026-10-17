@@ -14,7 +14,8 @@ import threading
 import time
 import urllib.request
 import urllib.parse
-from datetime import datetime, timezone
+import hashlib
+from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 try:
     from zoneinfo import ZoneInfo
@@ -898,6 +899,121 @@ def _fetch_decompress(body, enc):
 
 # ── HTTP сервер ────────────────────────────────────────────────────────────────
 
+# ── счётчик уникальных посетителей страницы ленты ─────────────────────────────
+# Считаем ТОЛЬКО заходы на саму страницу: _stats_hit дёргается из веток «/» и
+# «/adm» в do_GET. Автоопрос бьёт по /feed, это отдельная ветка — туда счётчик
+# физически не заходит, накрутить раз в 30 секунд нечем.
+# На диск кладём НЕ адрес, а отпечаток sha256(соль|ip) — чужих IP в файле нет.
+# Смена STATS_SALT делает старые отпечатки несопоставимыми: тот же человек
+# посчитается заново. Менять только осознанно.
+STATS_SALT = os.environ.get("STATS_SALT") or "polymon-visits-9f3c"
+STATS_KEEP_DAYS = 60          # посуточные наборы старше — выбрасываем, файл не растёт
+
+def _stats_path():
+    """STATS_FILE → каталог состояния от systemd (StateDirectory) → рядом с app.py."""
+    p = os.environ.get("STATS_FILE")
+    if p:
+        return p
+    d = os.environ.get("STATE_DIRECTORY") or os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(d.split(":")[0], "visits.json")   # systemd может дать список через :
+
+STATS_FILE = _stats_path()
+STATS_LOCK = threading.Lock()  # свой замок: общий LOCK занят сканом ленты
+_STATS = None                  # {"days": {дата: [отпечатки]}, "all": [отпечатки]}
+_STATS_OK = True               # пишется ли файл (показываем на /adm, чтобы не врать молча)
+
+def _stats_day():
+    """Дата по Киеву — чтобы «сегодня» совпадало с тем, что показывает лента."""
+    try:
+        if KYIV:
+            return datetime.now(KYIV).strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+def _stats_load():
+    global _STATS
+    if _STATS is not None:
+        return _STATS
+    data = {"days": {}, "all": []}
+    try:
+        with open(STATS_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if isinstance(raw, dict):                  # битый/чужой формат — не доверяем
+            d, a = raw.get("days"), raw.get("all")
+            data = {"days": d if isinstance(d, dict) else {},
+                    "all":  a if isinstance(a, list) else []}
+    except Exception:
+        pass                                       # нет файла или мусор — начинаем с нуля
+    _STATS = data
+    return _STATS
+
+def _stats_save():
+    global _STATS_OK
+    try:
+        tmp = STATS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_STATS, f, separators=(",", ":"))
+        os.replace(tmp, STATS_FILE)                # атомарно: обрыв не оставит огрызок
+        _STATS_OK = True
+    except Exception:
+        _STATS_OK = False                          # каталог не писабельный — считаем в памяти
+
+def _ip_ok(s):
+    try:
+        ipaddress.ip_address(s)
+        return True
+    except Exception:
+        return False
+
+def _client_ip(handler):
+    """(адрес, откуда взяли). nginx перед сервисом ставит X-Real-IP = $remote_addr —
+    это клиенту не подделать, поэтому он первый. X-Forwarded-For собирается через
+    $proxy_add_x_forwarded_for, то есть «что прислал клиент» + реальный адрес В КОНЦЕ,
+    поэтому из него берём ПОСЛЕДНИЙ элемент: первый клиент может написать любой."""
+    v = (handler.headers.get("X-Real-IP") or "").strip()
+    if v and _ip_ok(v):
+        return v, "X-Real-IP"
+    v = handler.headers.get("X-Forwarded-For") or ""
+    parts = [x.strip() for x in v.split(",") if x.strip()]
+    if parts and _ip_ok(parts[-1]):
+        return parts[-1], "X-Forwarded-For"
+    try:
+        return handler.client_address[0], "socket"
+    except Exception:
+        return "", "socket"
+
+def _stats_hit(handler):
+    """Отметить заход, вернуть сводку. Любая ошибка — молча None: страница важнее
+    счётчика и обязана отдаться в любом случае."""
+    try:
+        ip, src = _client_ip(handler)
+        fp = hashlib.sha256((STATS_SALT + "|" + ip).encode("utf-8")).hexdigest()[:16]
+        today = _stats_day()
+        with STATS_LOCK:
+            st = _stats_load()
+            day = st["days"].setdefault(today, [])
+            changed = False
+            if fp not in day:
+                day.append(fp); changed = True
+            if fp not in st["all"]:
+                st["all"].append(fp); changed = True
+            if len(st["days"]) > STATS_KEEP_DAYS:
+                for k in sorted(st["days"])[:-STATS_KEEP_DAYS]:
+                    st["days"].pop(k, None)
+                changed = True
+            if changed:
+                _stats_save()                      # пишем только когда есть что писать
+            yday = (datetime.strptime(today, "%Y-%m-%d").date() - timedelta(days=1)).isoformat()
+            return {"today": len(st["days"].get(today, [])),
+                    "yday":  len(st["days"].get(yday, [])),
+                    "total": len(st["all"]),
+                    "src":   src,
+                    "saved": _STATS_OK}
+    except Exception:
+        return None
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, ctype, body):
         self.send_response(code)
@@ -910,10 +1026,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/" or self.path.startswith("/index"):
+            _stats_hit(self)                     # считаем, но публичной не показываем
             self._send(200, "text/html; charset=utf-8", page(False))
         elif self.path.startswith("/adm"):
             # версия владельца. Это НЕ защита — просто другой адрес, без пароля
-            self._send(200, "text/html; charset=utf-8", page(True))
+            self._send(200, "text/html; charset=utf-8", page(True, _stats_hit(self)))
         elif self.path == "/ping":
             self._send(200, "text/plain", "pong")
         elif self.path.startswith("/pm"):
@@ -1987,6 +2104,7 @@ h1{font-size:18px;font-weight:600;color:var(--strong);margin-bottom:4px;display:
 .bar select option{background:var(--card);color:var(--txt)}
 .bar .auto.on{background:var(--on);border-color:var(--online);color:var(--ontxt)}
 #status{font-size:12px;color:var(--status)}
+#vis{font-size:12px;color:var(--status);opacity:.85}
 #hint{font-size:11px;font-weight:600;color:var(--warn);background:var(--warnbg);border:1px solid var(--warnline);border-radius:6px;padding:5px 9px}
 .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-bottom:14px;align-items:center}
 .legend b{color:var(--legend);font-weight:600}
@@ -2086,6 +2204,7 @@ h1{font-size:16px}
   <button id="thmbtn" onclick="toggleTheme()" title="Тема: тёмная → серая → бумажная → светлая">🌙 Тёмная</button>
   <select id="tzsel" onchange="setTz(this.value)" title="Часовой пояс, в котором показывать время матчей"></select>
   <span id="status">загрузка…</span>
+  <span id="vis" style="display:none"></span>
   <span id="hint" style="display:none"></span>
 </div>
 
@@ -2117,6 +2236,8 @@ h1{font-size:16px}
 // ADM=1 — версия владельца (/adm): есть кнопка обновления, звук включён.
 // ADM=0 — публичная (/): кнопки обновления нет, звук по умолчанию выключен.
 var ADM = __ADM__;
+// сводка посещений: приходит ТОЛЬКО на /adm, на публичной здесь null
+var VIS = __STATS__;
 // пороги подставляет сервер из FEED_LOW_VOL / FEED_MIN_VOL — чтобы подписи
 // не разъехались с реальным фильтром, когда порог поменяют
 var LOWK = __LOWK__, MINK = __MINK__;
@@ -2544,6 +2665,17 @@ function renderLow(ms){
     : '<div class="empty">Сейчас нет матчей в диапазоне $'+LOWK+'k–'+MINK+'k</div>';
 }
 
+// счётчик уникальных за сутки. Снимок на момент загрузки страницы — не живёт,
+// как лента: цифра меняется при F5, а не сама по себе
+function visLabel(){
+  var e=document.getElementById('vis');
+  if(!e || !VIS) return;                        // публичная: VIS === null, span так и лежит скрытым
+  e.textContent = '\u00b7 \ud83d\udc65 сегодня '+VIS.today+' · вчера '+VIS.yday+' · всего '+VIS.total
+                + (VIS.saved ? '' : ' · НЕ пишется на диск');
+  e.title = 'Уникальные заходы на страницу (адрес берём из '+VIS.src+')';
+  e.style.display='';
+}
+
 function lowLabel(){
   var b=document.getElementById('lowbtn');
   b.className='auto'+(showLow?' on':'');
@@ -2599,16 +2731,20 @@ if(TZ && !tzOk(TZ)) TZ='';      // в localStorage мог остаться по�
 tzOpts(); tzLabel();
 sndLabel();
 lowLabel();
+visLabel();
 updHints();
 loadFeed();
 timer = setInterval(loadFeed, 30000);
 </script></body></html>"""
 
-def page(adm):
+def page(adm, stats=None):
     """Одна страница на обе версии: /adm — владельцу (кнопка обновления, звук вкл),
     / — публичная (без кнопки, звук выкл). Разница только во флаге ADM.
-    Пороги подставляются из констант, чтобы подписи не разъехались с фильтром."""
-    return (PAGE.replace("__ADM__", "1" if adm else "0")
+    Пороги подставляются из констант, чтобы подписи не разъехались с фильтром.
+    stats — сводка посещений, её получает ТОЛЬКО /adm; на публичной там null."""
+    return (PAGE.replace("__STATS__", json.dumps(stats, ensure_ascii=False)
+                         if (adm and stats) else "null")
+                .replace("__ADM__", "1" if adm else "0")
                 .replace("__LOWK__", str(FEED_LOW_VOL // 1000))
                 .replace("__MINK__", str(FEED_MIN_VOL // 1000)))
 
