@@ -1899,11 +1899,12 @@ PAGE = r"""<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Live Esports · Polymarket</title>
 <script>/* тему ставим ДО отрисовки — иначе моргает тёмным при светлой */
-try{if(localStorage.getItem('polymon_theme')==='light')document.documentElement.className='light';}catch(e){}</script>
+try{var _t=localStorage.getItem('polymon_theme');if(_t==='light'||_t==='gray')document.documentElement.className=_t;}catch(e){}</script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-/* Тема: переменные. :root — тёмная (как было, hex не менялись), :root.light — светлая.
-   Светлые пары подобраны по контрасту: текст чипа ≥4.5:1, полоса/свотч ≥3:1 (WCAG). */
+/* Тема: переменные. :root — тёмная (как было, hex не менялись), :root.gray — серая,
+   :root.light — светлая. Пары подобраны по контрасту: текст чипа ≥4.5:1,
+   полоса/свотч ≥3:1 (WCAG). */
 :root{
 --bg:#0f1117;--card:#161a24;--line:#262b38;--txt:#e0e0e0;--strong:#fff;--teams:#f0f0f0;
 --muted:#8893a0;--legend:#a8b3c0;--dim:#667;--vs:#5a6472;--status:#8aa0b0;
@@ -1932,6 +1933,25 @@ try{if(localStorage.getItem('polymon_theme')==='light')document.documentElement.
 --bo5:#5B2FA8;--bo5bg:#F1EAFC;--bo5line:#B79BE0;
 --lnk:#1B6FB8;--warn:#8A4B00;--warnbg:#FCF0DA;--warnline:#E0BC60;
 --swg:#6B7B8C;--swy:#B8860B;--swgr:#0E8A66}
+/* серая: фон между тёмной и светлой (#31353D / карточка #3C424C). Акценты НЕ взяты из
+   тёмной — на светлом фоне они просаживались: CS2 #F5A623 давал 4.0:1, LoL #4C9BE0 3.4:1.
+   Здесь осветлённые варианты, все ≥4.5:1 на своей подложке. */
+:root.gray{
+--bg:#31353D;--card:#3C424C;--line:#4A515C;--txt:#E4E7EB;--strong:#FFFFFF;--teams:#EEF1F4;
+--muted:#A6B0BC;--legend:#C8D0DA;--dim:#A6B0BC;--vs:#99A3B1;--status:#A6B0BC;
+--chip:#2E333B;--chip2:#2E333B;--chipline:#4A515C;--chipline2:#454C56;
+--dtxt:#C6D0DC;--db:#EAF0F6;--thin:#F0B069;--rel:#ADB7C3;
+--btn:#2B3A47;--btnline:#44596B;--btntxt:#AEDAFA;
+--on:#1E3A30;--online:#2DB88C;--ontxt:#8FE8C6;
+--live:#8FE8C6;--livebg:#1E3A30;--liveline:#2DB88C66;
+--early:#F7BE57;--earlybg:#423520;--earlyline:#F7BE5766;
+--zup:#8FE8C6;--zupbg:#1E3A30;--zupline:#2DB88C66;
+--selbg:#39465C;--selline:#6AB0E8;--selteams:#DCE9F7;--acc:#6AB0E8;
+/* Bo5: заливка .fmt.b5 поднята (#4A3D6E вместо тёмного #2a1c45) — на серой карточке
+   тёмная заливка читалась «вдавленной», в тёмной теме она наоборот светлее фона */
+--bo5:#C9A6FF;--bo5bg:#4A3D6E;--bo5line:#9A7AE0;
+--lnk:#8CC4F0;--warn:#F7BE57;--warnbg:#423520;--warnline:#F7BE5766;
+--swg:#A6B0BC;--swy:#E0B055;--swgr:#39C79B}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--txt);min-height:100vh;padding:16px;max-width:1100px;margin:0 auto}
 h1{font-size:18px;font-weight:600;color:var(--strong);margin-bottom:4px;display:flex;align-items:center;gap:9px}
 .dot{width:9px;height:9px;border-radius:50%;background:var(--online);animation:p 1.6s infinite}
@@ -1940,6 +1960,10 @@ h1{font-size:18px;font-weight:600;color:var(--strong);margin-bottom:4px;display:
 .bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
 .bar button{background:var(--btn);border:1px solid var(--btnline);color:var(--btntxt);border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px;font-weight:500}
 .bar button:active{opacity:.7}
+.bar select{background:var(--btn);border:1px solid var(--btnline);color:var(--btntxt);border-radius:8px;padding:8px 10px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit;max-width:240px}
+/* раскрытый список у части браузеров рисуется своими цветами — задаём явно,
+   иначе на светлой теме получался светлый текст на светлом фоне */
+.bar select option{background:var(--card);color:var(--txt)}
 .bar .auto.on{background:var(--on);border-color:var(--online);color:var(--ontxt)}
 #status{font-size:12px;color:var(--status)}
 #hint{font-size:11px;font-weight:600;color:var(--warn);background:var(--warnbg);border:1px solid var(--warnline);border-radius:6px;padding:5px 9px}
@@ -1986,7 +2010,7 @@ h1{font-size:18px;font-weight:600;color:var(--strong);margin-bottom:4px;display:
 .empty{font-size:13px;color:var(--muted);font-style:italic;padding:24px;text-align:center}
 /* ≤768px (планшет и уже): пальцем попадать по стрелке 21px неудобно — поднимаем зоны */
 @media(max-width:768px){
-.bar button{min-height:38px}
+.bar button,.bar select{min-height:38px}
 .chk{width:19px;height:19px}
 .lnk{display:inline-flex;align-items:center;justify-content:center;min-width:36px;min-height:36px;padding:0}}
 /* ≤560px: строка перестраивается в две — команды отдельной строкой. Порядок задан ВСЕМ
@@ -2000,6 +2024,7 @@ h1{font-size:16px}
 .sub{font-size:11px;margin:0 0 12px 0}
 .bar{gap:7px}
 .bar button{padding:9px 11px;font-size:12px;min-height:40px}
+.bar select{padding:9px 8px;font-size:12px;min-height:40px;max-width:100%}
 .legend{gap:9px;margin-bottom:12px}
 .mrow{gap:7px;padding:9px 10px}
 .badge{min-width:52px;font-size:10px;padding:4px 7px}
@@ -2023,7 +2048,8 @@ h1{font-size:16px}
   <button class="auto on" id="sndbtn" onclick="toggleSnd()" title="Сигнал, если старт матча перенесли на более раннее время">🔔 Звук: вкл</button>
   <button id="ntfbtn" onclick="askNotify()" title="Разрешить всплывающие уведомления о входе матча в зелёную зону">🟢 Уведомления</button>
   <button class="auto" id="lowbtn" onclick="toggleLow()" title="Показать матчи с объёмом ниже рабочего порога $__MINK__k">👁 Ниже $__MINK__k: выкл</button>
-  <button id="thmbtn" onclick="toggleTheme()" title="Светлая / тёмная тема">🌙 Тёмная</button>
+  <button id="thmbtn" onclick="toggleTheme()" title="Тема: тёмная → серая → светлая">🌙 Тёмная</button>
+  <select id="tzsel" onchange="setTz(this.value)" title="Часовой пояс, в котором показывать время матчей"></select>
   <span id="status">загрузка…</span>
   <span id="hint" style="display:none"></span>
 </div>
@@ -2033,7 +2059,7 @@ h1{font-size:16px}
   <span class="lg"><span class="sw zg"></span> $100k–200k</span>
   <span class="lg"><span class="sw zy"></span> $200k–500k</span>
   <span class="lg"><span class="sw zgr"></span> ≥ $500k</span>
-  <span>·  время киевское · «стакан» = глубина match-winner на ±12¢</span>
+  <span>·  <span id="tzlabel">время матчей</span> · «стакан» = глубина match-winner на ±12¢</span>
 </div>
 
 <div class="feed" id="feed"><div class="empty">загрузка…</div></div>
@@ -2054,6 +2080,9 @@ var LOWK = __LOWK__, MINK = __MINK__;
 // поэтому для светлой — затемнённые варианты (все ≥4.9:1 на своей подложке)
 var GAME_D = {CS2:'#F5A623', LoL:'#4C9BE0', Dota2:'#E24B4A', Valorant:'#E255A0'};
 var GAME_L = {CS2:'#8A5A00', LoL:'#1A5F96', Dota2:'#B02322', Valorant:'#A8226B'};
+// серая: подложка карточки светлее тёмной, оттенки GAME_D на ней просаживаются
+// (LoL давал 3.4:1) — осветлённые варианты, все ≥4.5:1 на своей 13%-заливке
+var GAME_G = {CS2:'#FFC061', LoL:'#A3D2F5', Dota2:'#FFB3B1', Valorant:'#FFACD6'};
 // зоны объёма: [текст, фон чипа, рамка чипа, полоса слева]. Пороги задаёт СЕРВЕР
 // (поле zone), фронт только красит — контракт /feed не меняется, m.color = fallback.
 var ZONE_D = {gray:  ['#8893a0','#8893a01e','#8893a055','#8893a0'],
@@ -2062,19 +2091,95 @@ var ZONE_D = {gray:  ['#8893a0','#8893a01e','#8893a055','#8893a0'],
 var ZONE_L = {gray:  ['#42505F','#EDF0F3','#C7D0DA','#6B7B8C'],
               yellow:['#7A5200','#FBF1D6','#E0BC60','#B8860B'],
               green: ['#0B6B4F','#E1F5EE','#7FD0B5','#0E8A66']};
-function isLight(){ return document.documentElement.classList.contains('light'); }
+var ZONE_G = {gray:  ['#C9D3DF','#C9D3DF1e','#C9D3DF55','#C9D3DF'],
+              yellow:['#F2C771','#F2C7711e','#F2C77155','#F2C771'],
+              green: ['#8FE8C6','#8FE8C61e','#8FE8C655','#8FE8C6']};
+// три темы по кругу одной кнопкой: тёмная (без класса) → серая (.gray) → светлая (.light)
+var THM     = [['dark','🌙 Тёмная'],['gray','◐ Серая'],['light','☀ Светлая']];
+var GAME    = {dark:GAME_D, gray:GAME_G, light:GAME_L};
+var GAME_FB = {dark:'#8893a0', gray:'#A6B0BC', light:'#5A6672'};   // неизвестная дисциплина
+var ZONE    = {dark:ZONE_D, gray:ZONE_G, light:ZONE_L};
+function theme(){
+  var c = document.documentElement.classList;
+  return c.contains('light') ? 'light' : (c.contains('gray') ? 'gray' : 'dark');
+}
 function zoneCol(m){
-  var t = (isLight()?ZONE_L:ZONE_D)[m.zone];
+  var t = ZONE[theme()][m.zone];
   return t || [m.color, m.color+'1e', m.color+'55', m.color];   // незнакомая зона — цвет с сервера
 }
-function applyTheme(light){
-  document.documentElement.classList.toggle('light', light);
+function applyTheme(name){
+  var c = document.documentElement.classList;
+  c.remove('light'); c.remove('gray');
+  if(name==='light' || name==='gray') c.add(name);
   var b=document.getElementById('thmbtn');
-  if(b) b.textContent = light ? '☀ Светлая' : '🌙 Тёмная';
-  try{ localStorage.setItem('polymon_theme', light?'light':'dark'); }catch(e){}
+  if(b) b.textContent = (THM.filter(function(p){ return p[0]===name; })[0] || THM[0])[1];
+  try{ localStorage.setItem('polymon_theme', name); }catch(e){}
 }
-function toggleTheme(){ applyTheme(!isLight());                                  // перекрасить: цвета зон инлайновые
+function toggleTheme(){
+  var i=0; for(var k=0;k<THM.length;k++) if(THM[k][0]===theme()) i=k;
+  applyTheme(THM[(i+1)%THM.length][0]);                                          // перекрасить: цвета зон инлайновые
   if(LAST.length) render(LAST); if(LAST_LOW.length) renderLow(LAST_LOW); }
+
+// ── часовой пояс для времени матчей ───────────────────────────────────────────
+// Сервер отдаёт и готовую метку по Киеву (m.start), и unix-время старта (m.gst).
+// Метку считаем на клиенте из m.gst по ВЫБРАННОЙ зоне — смещения не зашиты,
+// Intl берёт их из базы зон браузера, поэтому переход на зимнее время не ломает показ.
+// Внимание: «Бали» — это Asia/Makassar; зоны Asia/Bali в IANA нет.
+var TZS = [['Asia/Makassar','Бали'], ['Europe/Moscow','Москва'], ['Europe/Kyiv','Киев'],
+           ['Europe/Istanbul','Стамбул'], ['Europe/Berlin','Берлин'], ['Europe/London','Лондон'],
+           ['America/New_York','Нью-Йорк'], ['America/Los_Angeles','Лос-Анджелес'],
+           ['America/Sao_Paulo','Сан-Паулу'], ['Asia/Dubai','Дубай'], ['Asia/Almaty','Алматы'],
+           ['Asia/Bangkok','Бангкок'], ['Asia/Seoul','Сеул'], ['Australia/Sydney','Сидней'],
+           ['UTC','UTC']];
+var TZ = '';                    // '' = авто (зона браузера)
+try{ TZ = localStorage.getItem('polymon_tz') || ''; }catch(e){}
+function tzOk(z){ try{ new Intl.DateTimeFormat('en-US',{timeZone:z}); return true; }catch(e){ return false; } }
+function tzAuto(){ try{ return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }catch(e){ return 'UTC'; } }
+function tzCity(z){ return String(z).split('/').pop().replace(/_/g,' '); }
+// подпись смещения считается КАЖДЫЙ раз из текущей даты, а не хранится числом
+function tzOff(z){
+  try{
+    var p = new Intl.DateTimeFormat('en-US',{timeZone:z,timeZoneName:'shortOffset'})
+              .formatToParts(new Date()).filter(function(x){ return x.type==='timeZoneName'; })[0];
+    // 'GMT-4' → 'UTC−4'; 'GMT+0'/'GMT' → 'UTC' (нулевое смещение подписываем без «+0»)
+    if(p && p.value) return p.value.replace('GMT','UTC').replace('-','−').replace(/\+0$/,'');
+  }catch(e){}
+  return z;
+}
+function tzOpts(){
+  var s=document.getElementById('tzsel'); if(!s) return;
+  var a=tzAuto();
+  var h='<option value=""'+(TZ?'':' selected')+'>авто — '+esc(tzCity(a))+' ('+esc(tzOff(a))+')</option>';
+  TZS.forEach(function(p){
+    h += '<option value="'+p[0]+'"'+(TZ===p[0]?' selected':'')+'>'+esc(p[1])+' ('+esc(tzOff(p[0]))+')</option>';
+  });
+  s.innerHTML=h;
+}
+function tzLabel(){
+  var e=document.getElementById('tzlabel'); if(!e) return;
+  var z = TZ || tzAuto();
+  e.textContent = 'время: '+tzCity(z)+' ('+tzOff(z)+')';
+}
+function setTz(v){
+  TZ = (v && tzOk(v)) ? v : '';
+  try{ localStorage.setItem('polymon_tz', TZ); }catch(e){}
+  tzLabel();
+  if(LAST.length) render(LAST); if(LAST_LOW.length) renderLow(LAST_LOW);
+}
+// метка старта в выбранной зоне. Формат как у сервера: 'HH:MM', а если старт не
+// сегодня (по этой же зоне) — 'ДД.ММ HH:MM'. Нет m.gst — показываем серверную метку.
+function fmtTime(m){
+  var g = +m.gst;
+  if(!g) return m.start || '';
+  try{
+    var o = TZ ? {timeZone:TZ} : {};
+    var d = new Date(g*1000);
+    var hm = d.toLocaleTimeString('uk-UA', Object.assign({hour:'2-digit',minute:'2-digit',hour12:false}, o));
+    var same = d.toLocaleDateString('en-CA', o) === new Date().toLocaleDateString('en-CA', o);
+    return same ? hm
+      : (d.toLocaleDateString('uk-UA', Object.assign({day:'2-digit',month:'2-digit'}, o)) + ' ' + hm);
+  }catch(e){ return m.start || ''; }
+}
 
 var LAST = [], LAST_LOW = [];   // последняя лента — чтобы перекрасить без запроса
 // показывать ли матчи ниже рабочего порога. По умолчанию выкл, выбор запоминается
@@ -2097,9 +2202,15 @@ var actx = null;
 var T_TIME = [[880,0],[1320,0.22]];              // перенос старта раньше
 var T_ZONE = [[523,0],[659,0.20],[784,0.40]];    // вход в зелёную зону
 var T_TIED = [[988,0],[740,0.22],[988,0.44]];    // Bo5 вышел на 1:1 (контур вниз-вверх)
-// PEAK 0.5 (было 0.25, +6 дБ) и хвост 0.42с (было 0.15с) — было слишком тихо и коротко.
-// Не 1.0: тона накладываются, сумма двух пиков не должна выходить за 1.0 (клиппинг).
-var PEAK = 0.5, TAIL = 0.42;
+var T_LIVE = [[659,0],[988,0.18],[1319,0.36]];   // старт матча, уже стоящего в зелёной зоне
+                                                 // (квинта+кварта вверх, выше остальных — на слух не спутать)
+// PEAK 0.7 (было 0.25 -> 0.5 -> 0.7) и хвост 0.42с (было 0.15с) — было слишком тихо.
+// Про наложение: ВНУТРИ одного набора нот его нет. Спад экспоненциальный и очень
+// быстрый — к следующей ноте (0.18-0.22с) предыдущая падает до ~0.7% пика, так что
+// сумма упирается в сам PEAK (замер: 0.70 при PEAK=0.7). Подрезать TAIL не нужно.
+// Не 1.0 — запас на случай, когда в один опрос срабатывает несколько сигналов сразу:
+// их beep'ы стартуют почти одновременно и складываются пиками (см. комментарий в beep).
+var PEAK = 0.7, TAIL = 0.42;
 function beep(tones){
   if(!snd) return;
   try{
@@ -2216,6 +2327,44 @@ function checkTied(ms){
   return hit;
 }
 
+// ── матч начался, уже стоя в зелёной зоне ─────────────────────────────────────
+// Остальные три сигнала опираются на серверную метку времени события (moved_ts,
+// zone_up_ts, tied_ts). Здесь такой метки нет, а серверную часть не трогаем —
+// поэтому ПЕРЕХОД ловим в самой вкладке, по двум полям, которые сервер уже отдаёт:
+//   «начался»        = m.when === 'в игре'  (сервер ставит, когда gst - now <= 0;
+//                      по этому же признаку строка красится как live)
+//   «в зелёной зоне» = m.zone === 'green'   (зону считает сервер по объёму)
+// Условие именно «начался, БУДУЧИ в зелёной»: решение принимаем один раз, в момент
+// самого перехода. Если матч стартовал в жёлтой и позеленел позже — это не наш
+// случай, на него уже есть сигнал входа в зелёную (T_ZONE).
+// Матч, который шёл УЖЕ в момент открытия вкладки, не сигналит: перехода мы не
+// видели, иначе каждый F5 на идущем матче давал бы ложный сигнал.
+var PREGAME = {};               // key -> true, пока видим матч ДО старта
+var LIVEG   = {};               // key -> true, если по старту в зелёной уже сигналили
+function notifyLiveGreen(m){
+  try{
+    if(('Notification' in window) && Notification.permission === 'granted'){
+      var n = new Notification('🚀 Старт в зелёной · ' + (m.vol_text||''), {
+        body: (m.game||'') + ' · ' + (m.t1||'') + ' vs ' + (m.t2||'')
+              + (m.tournament ? '\n' + m.tournament : ''),
+        tag: 'livegreen-' + (m.url||''),     // не плодить дубли по одному матчу
+      });
+      n.onclick = function(){ window.focus(); if(m.url) window.open(m.url,'_blank'); };
+    }
+  }catch(e){}
+}
+function checkLiveGreen(ms){
+  var hit=false;
+  ms.forEach(function(m){
+    var key=m.url||(m.t1+'|'+m.t2);
+    if(m.when!=='в игре'){ PREGAME[key]=true; return; }   // ещё не начался — ждём старта
+    if(!PREGAME[key]) return;                             // перехода не видели (или уже разобрали)
+    PREGAME[key]=false;                                   // решение ровно одно — на самом переходе
+    if(m.zone==='green'){ LIVEG[key]=true; notifyLiveGreen(m); hit=true; }
+  });
+  return hit;
+}
+
 // перенос определяет СЕРВЕР (помнит время между сканами, даже если вкладка закрыта).
 // здесь только решаем, бипать ли: по каждому событию переноса — один раз.
 function checkEarlier(ms){
@@ -2241,12 +2390,12 @@ function money(v){ if(v==null) return '—'; return '$'+(v>=1000?(v/1000).toFixe
 // одна строка ленты. low=true — матч ниже рабочего порога: вне шкалы зон, поэтому без
 // зонного цвета (нейтральный чип объёма, пунктирная рамка, приглушённые команды)
 function rowHtml(m, low){
-  var gc = (isLight()?GAME_L:GAME_D)[m.game] || (isLight()?'#5A6672':'#8893a0');
+  var gc = GAME[theme()][m.game] || GAME_FB[theme()];
   var badge = '<span class="badge" style="color:'+gc+';background:'+gc+'22;border:1px solid '+gc+'55">'+esc(m.game)+'</span>';
   var fmt = '<span class="fmt'+(m.bo===5?' b5':'')+'">BO'+(m.bo||3)+'</span>';
   var tied = (m.tied_ts!=null) ? '<span class="tied">⚡ 1:1</span>' : '';
   var live = (m.when==='в игре');
-  var time = '<span class="time'+(live?' live':'')+'">⏰ '+esc(m.start)+'<span class="rel">'+esc(m.when)+'</span></span>';
+  var time = '<span class="time'+(live?' live':'')+'">⏰ '+esc(fmtTime(m))+'<span class="rel">'+esc(m.when)+'</span></span>';
   var thin = (m.depth!=null && m.depth<2000);
   var depth = '<span class="depth'+(thin?' thin':'')+'">стакан <b>'+money(m.depth)+'</b></span>';
   var zc = low ? null : zoneCol(m);
@@ -2257,6 +2406,9 @@ function rowHtml(m, low){
   var key = m.url || (m.t1+'|'+m.t2);
   var early = (m.moved_mins!=null) ? '<span class="early">⏱ раньше на '+m.moved_mins+' мин</span>' : '';
   var zup = (m.zone_up_ts!=null) ? '<span class="zup">🟢 вошёл в зелёную</span>' : '';
+  // в отличие от остальных меток эта держится на памяти ВКЛАДКИ (серверного поля нет),
+  // поэтому переживает авто-обновление, но не F5 — как и сам сигнал
+  var lvg = LIVEG[key] ? '<span class="zup">🚀 старт в зелёной</span>' : '';
   var on = SEL.has(key);
   var chk = '<input type="checkbox" class="chk" '+(on?'checked ':'')
     + 'onchange="toggleSel(this,\'' + esc(key).replace(/'/g,"\\'") + '\')" title="Выделить матч">';
@@ -2266,7 +2418,7 @@ function rowHtml(m, low){
     + badge
     + fmt
     + '<span class="teams">'+esc(m.t1)+'<span class="vs">vs</span>'+esc(m.t2)+'</span>'
-    + time + tied + early + zup + depth + vol + link + tour
+    + time + tied + early + zup + lvg + depth + vol + link + tour
     + '</div>';
 }
 
@@ -2309,11 +2461,13 @@ async function loadFeed(){
     var earlier = checkEarlier(d.matches||[]);
     var zoned = checkZone(d.matches||[]);
     var tied  = checkTied(d.matches||[]);
+    var lvgrn = checkLiveGreen(d.matches||[]);   // ДО присвоения LAST: сравниваем с тем, что видели
     LAST = d.matches||[]; LAST_LOW = d.low||[];
     render(LAST); renderLow(LAST_LOW);
     if(earlier) beep(T_TIME);
     if(zoned) beep(T_ZONE);
     if(tied) beep(T_TIED);
+    if(lvgrn) beep(T_LIVE);
     var tm = d.ts || new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
     st.textContent = (d.matches?d.matches.length:0)+' матчей'
       + (LAST_LOW.length?(' · '+LAST_LOW.length+' ниже порога'):'')
@@ -2336,7 +2490,9 @@ function toggleAuto(){
 // «Авто» тут убрана намеренно: выключив её, друг остался бы вообще без способа
 // обновить ленту, и застывший список выглядел бы как «матчей нет».
 if(!ADM){ ['refbtn','autobtn'].forEach(function(id){ var b=document.getElementById(id); if(b) b.remove(); }); }
-applyTheme(isLight());          // подписать кнопку темы под то, что уже применено в <head>
+applyTheme(theme());            // подписать кнопку темы под то, что уже применено в <head>
+if(TZ && !tzOk(TZ)) TZ='';      // в localStorage мог остаться пояс, которого нет в этом браузере
+tzOpts(); tzLabel();
 sndLabel();
 lowLabel();
 updHints();
