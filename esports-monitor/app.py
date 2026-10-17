@@ -2211,17 +2211,34 @@ var T_LIVE = [[659,0],[988,0.18],[1319,0.36]];   // старт матча, уж�
 // Не 1.0 — запас на случай, когда в один опрос срабатывает несколько сигналов сразу:
 // их beep'ы стартуют почти одновременно и складываются пиками (см. комментарий в beep).
 var PEAK = 0.7, TAIL = 0.42;
+// Очередь на аудио-часах. В один опрос может прилететь до четырёх событий (перенос,
+// зона, 1:1, старт в зелёной), и раньше их beep'ы стартовали одновременно: сумма
+// мгновенных значений выходила за 1.0 (замер: два сигнала 1.35, четыре 1.94) — это
+// клиппинг, и на слух каша, в которой не разобрать, что именно произошло. Поэтому
+// наборы ставим ВСТЫК друг за другом: QNEXT помнит, когда освободится линия.
+// Громкость при этом не режем — сигналы просто не накладываются.
+var QNEXT = 0;                  // момент на аудио-часах, когда линия свободна
+var QGAP  = 0.12;               // пауза между наборами, чтобы они не слиплись на слух
+var QMAX  = 6;                  // сек: дальше в будущее не планируем — страховка от
+                                // накопления хвоста, если события пойдут пачками подряд
 function beep(tones){
   if(!snd) return;
   try{
     actx = actx || new (window.AudioContext||window.webkitAudioContext)();
     if(actx.state === 'suspended') actx.resume();
+    var ts = tones || T_TIME, now = actx.currentTime;
+    // одиночный сигнал (обычный случай) звучит сразу: QNEXT давно в прошлом
+    var at = Math.max(now, QNEXT);
+    if(at - now > QMAX) return;                 // очередь забита — хвост отбрасываем
+    var last = 0;
+    ts.forEach(function(p){ if(p[1] > last) last = p[1]; });
+    QNEXT = at + last + TAIL + 0.01 + QGAP;     // линия занята до конца этого набора
     // короткие тона, без голоса
-    (tones || T_TIME).forEach(function(p){
+    ts.forEach(function(p){
       var o=actx.createOscillator(), g=actx.createGain();
       o.type='sine'; o.frequency.value=p[0];
       o.connect(g); g.connect(actx.destination);
-      var t=actx.currentTime+p[1];
+      var t=at+p[1];
       g.gain.setValueAtTime(0.0001,t);
       g.gain.exponentialRampToValueAtTime(PEAK,t+0.01);
       g.gain.exponentialRampToValueAtTime(0.0001,t+TAIL);
