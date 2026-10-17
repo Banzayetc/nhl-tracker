@@ -1933,24 +1933,27 @@ try{var _t=localStorage.getItem('polymon_theme');if(_t==='light'||_t==='gray'||_
 --bo5:#5B2FA8;--bo5bg:#F1EAFC;--bo5line:#B79BE0;
 --lnk:#1B6FB8;--warn:#8A4B00;--warnbg:#FCF0DA;--warnline:#E0BC60;
 --swg:#6B7B8C;--swy:#B8860B;--swgr:#0E8A66}
-/* серая: холодный графит — почти чёрный фон с явным синим отливом (#121A28), карточка
-   на тон светлее. От тёмной отличается не столько яркостью, сколько насыщенностью:
-   у тёмной #0F1117 разброс каналов 8, здесь 22. Акценты подняты относительно тёмной —
-   карточка светлее (L* 14 против 9), и на ней LoL #4C9BE0 давал 4.3:1, Dota2 3.5:1. */
+/* серая: НЕЙТРАЛЬНЫЙ графит, без цветового отлива. Разброс каналов держим близким к
+   нулю (фон 9, карточка 11, поле 7) — синевы быть не должно. От тёмной отличается
+   ЯРКОСТЬЮ: L* фона 13 против 5, карточки 17 против 9, то есть графит светлее на
+   ступень и темы не путаются. Поле ввода ТЕМНЕЕ карточки (#1A1D21 на #262A31) —
+   тёмный прямоугольник на более светлой панели, рамка тонкая, но различимая.
+   Акценты подняты относительно тёмной: на светлой карточке LoL #4C9BE0 давал 3.97:1,
+   Dota2 3.25:1, зона green 3.64:1. */
 :root.gray{
---bg:#121A28;--card:#1A2436;--line:#26334A;--txt:#E9EDF3;--strong:#FFFFFF;--teams:#F2F5FA;
---muted:#8FA0B8;--legend:#B3C2D6;--dim:#8FA0B8;--vs:#8295AD;--status:#8FA0B8;
---chip:#202C42;--chip2:#202C42;--chipline:#30405C;--chipline2:#2A3850;
---dtxt:#BCCBDE;--db:#EAF1F9;--thin:#E8A862;--rel:#93A4BB;
---btn:#1C2A3E;--btnline:#33475F;--btntxt:#9FD0F5;
---on:#11251C;--online:#1D9E75;--ontxt:#7FDDBB;
---live:#7FE3C2;--livebg:#0d2a1e;--liveline:#1D9E7566;
---early:#F5A623;--earlybg:#2a1f0d;--earlyline:#F5A62366;
---zup:#7FE3C2;--zupbg:#0d2a1e;--zupline:#1D9E7566;
---selbg:#1b2740;--selline:#4C9BE0;--selteams:#cfe6ff;--acc:#4C9BE0;
---bo5:#C9A6FF;--bo5bg:#2a1c45;--bo5line:#7E5BC4;
---lnk:#6FB3EC;--warn:#F5A623;--warnbg:#2a1f0d;--warnline:#F5A62366;
---swg:#A3B2C4;--swy:#D9A441;--swgr:#3FD3A2}
+--bg:#1F2228;--card:#262A31;--line:#30353C;--txt:#E8EAEC;--strong:#FFFFFF;--teams:#F0F2F4;
+--muted:#9BA3AD;--legend:#C2C8D0;--dim:#9BA3AD;--vs:#8A929C;--status:#9BA3AD;
+--chip:#1A1D21;--chip2:#1A1D21;--chipline:#30353C;--chipline2:#2C3139;
+--dtxt:#B8C0CA;--db:#EDF0F3;--thin:#E8A862;--rel:#9BA3AD;
+--btn:#22262C;--btnline:#343A42;--btntxt:#9FD0F5;
+--on:#15291F;--online:#1D9E75;--ontxt:#7FDDBB;
+--live:#7FE3C2;--livebg:#122a20;--liveline:#1D9E7566;
+--early:#F5A623;--earlybg:#2b2110;--earlyline:#F5A62366;
+--zup:#7FE3C2;--zupbg:#122a20;--zupline:#1D9E7566;
+--selbg:#232d3d;--selline:#4C9BE0;--selteams:#cfe6ff;--acc:#4C9BE0;
+--bo5:#C9A6FF;--bo5bg:#2e2449;--bo5line:#8A68CE;
+--lnk:#6FB3EC;--warn:#F5A623;--warnbg:#2b2110;--warnline:#F5A62366;
+--swg:#9BA3AD;--swy:#D9A441;--swgr:#3FD3A2}
 /* бумажная: тёплый светлый фон небелёного льна (#F1ECE1), панель чуть светлее и теплее,
    чипы почти белые с мягкой серой рамкой. Текст тёмно-серый, НЕ чёрный. Акцент —
    приглушённый синий #3D6B99. Цвета дисциплин/зон взяты тёплые и проверены на ЭТОЙ
@@ -2098,8 +2101,8 @@ var LOWK = __LOWK__, MINK = __MINK__;
 // поэтому для светлой — затемнённые варианты (все ≥4.9:1 на своей подложке)
 var GAME_D = {CS2:'#F5A623', LoL:'#4C9BE0', Dota2:'#E24B4A', Valorant:'#E255A0'};
 var GAME_L = {CS2:'#8A5A00', LoL:'#1A5F96', Dota2:'#B02322', Valorant:'#A8226B'};
-// графит: карточка светлее тёмной (L* 14 против 9), оттенки GAME_D на ней просаживаются
-// (LoL 4.3:1, Dota2 3.5:1) — поднятые варианты, все ≥5:1 на своей 13%-заливке
+// графит: карточка светлее тёмной (L* 17 против 9), оттенки GAME_D на ней просаживаются
+// (LoL 3.97:1, Dota2 3.25:1) — поднятые варианты, все ≥4.7:1 на своей 13%-заливке
 var GAME_G = {CS2:'#F5A623', LoL:'#6FB3EC', Dota2:'#FF7D7B', Valorant:'#FF77BC'};
 // бумажная: проверены на тёплой карточке #FAF6EE, все ≥4.5:1
 var GAME_P = {CS2:'#8A5A00', LoL:'#1A5F96', Dota2:'#B02322', Valorant:'#A8226B'};
