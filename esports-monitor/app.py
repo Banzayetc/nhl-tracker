@@ -1993,6 +1993,19 @@ h1{font-size:18px;font-weight:600;color:var(--strong);margin-bottom:4px;display:
 .lg{display:inline-flex;align-items:center;gap:5px}
 .sw{width:11px;height:11px;border-radius:3px;display:inline-block}
 .sw.zg{background:var(--swg)}.sw.zy{background:var(--swy)}.sw.zgr{background:var(--swgr)}
+/* справка по сигналам (только /adm). Свёрнута — в закрытом виде одна строка,
+   ленту не отодвигает. Раскрытие на нативном <details>, без своего JS. */
+.sig{margin:0 0 14px 0;font-size:12px;color:var(--muted)}
+.sig>summary{cursor:pointer;color:var(--legend);font-weight:600;list-style:none;display:inline-flex;align-items:center;gap:6px;padding:3px 0}
+.sig>summary::-webkit-details-marker{display:none}
+.sig>summary::before{content:'▸';font-size:10px}
+.sig[open]>summary::before{content:'▾'}
+.sigrow{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:5px 0 5px 16px}
+.sigrow b{color:var(--legend);font-weight:600;min-width:140px}
+.sig button{background:var(--btn);border:1px solid var(--btnline);color:var(--btntxt);border-radius:7px;padding:3px 10px;cursor:pointer;font-size:12px;flex:none}
+.sig button:active{opacity:.7}
+.sig button:disabled{opacity:.45;cursor:not-allowed}
+.signote{padding:5px 0 0 16px;color:var(--warn)}
 .feed{display:flex;flex-direction:column;gap:7px}
 .mrow{display:flex;align-items:center;gap:11px;flex-wrap:wrap;background:var(--card);border:1px solid var(--line);border-left-width:4px;border-radius:10px;padding:10px 13px}
 .mrow.sel{background:var(--selbg);border-color:var(--selline);box-shadow:inset 0 0 0 1px var(--selline)}
@@ -2056,6 +2069,7 @@ h1{font-size:16px}
 .time{font-size:13px;padding:4px 8px}
 .time .rel{font-size:10px;margin-left:4px}
 .depth,.early,.zup{font-size:10px;padding:3px 7px}
+.sigrow b{min-width:0}
 .vol{font-size:13px;padding:4px 9px}
 .chk{width:20px;height:20px}
 .lnk{display:inline-flex;align-items:center;justify-content:center;min-width:40px;min-height:40px;font-size:20px;padding:0}}
@@ -2082,6 +2096,15 @@ h1{font-size:16px}
   <span class="lg"><span class="sw zgr"></span> ≥ $500k</span>
   <span>·  <span id="tzlabel">время матчей</span> · «стакан» = глубина match-winner на ±12¢</span>
 </div>
+
+<details class="sig" id="sigbox">
+  <summary>Сигналы: что звучит</summary>
+  <div class="sigrow"><b>⏱ Раньше</b><span>старт перенесли на более раннее время</span><button class="sigplay" onclick="beep(T_TIME)" title="Послушать">▶</button></div>
+  <div class="sigrow"><b>🟢 Вошёл в зелёную</b><span>объём дорос до зелёной зоны</span><button class="sigplay" onclick="beep(T_ZONE)" title="Послушать">▶</button></div>
+  <div class="sigrow"><b>⚡ 1:1</b><span>Bo5 вышел на счёт 1:1</span><button class="sigplay" onclick="beep(T_TIED)" title="Послушать">▶</button></div>
+  <div class="sigrow"><b>🚀 Старт в зелёной</b><span>матч начался, уже будучи в зелёной зоне</span><button class="sigplay" onclick="beep(T_LIVE)" title="Послушать">▶</button></div>
+  <div class="signote" id="signote" style="display:none">⚠ звук выключен — включите «🔔 Звук», чтобы послушать</div>
+</details>
 
 <div class="feed" id="feed"><div class="empty">загрузка…</div></div>
 
@@ -2290,6 +2313,15 @@ function sndLabel(){
   var b=document.getElementById('sndbtn');
   b.className='auto'+(snd?' on':'');
   b.textContent='🔔 Звук: '+(snd?'вкл':'выкл');
+  sigLabel();
+}
+// кнопки «послушать» в справке: при выключенном звуке beep() молча ничего не делает,
+// поэтому кнопки гасим и говорим, почему — молчащая кнопка выглядела бы поломкой
+function sigLabel(){
+  var n=document.getElementById('signote');
+  if(n) n.style.display = snd ? 'none' : '';
+  var bs=document.querySelectorAll('.sigplay');
+  for(var i=0;i<bs.length;i++) bs[i].disabled = !snd;
 }
 function toggleSnd(){
   snd = !snd;
@@ -2560,7 +2592,8 @@ function toggleAuto(){
 // публичная версия: ни «Обновить», ни «Авто» — опрос просто всегда идёт раз в 30с.
 // «Авто» тут убрана намеренно: выключив её, друг остался бы вообще без способа
 // обновить ленту, и застывший список выглядел бы как «матчей нет».
-if(!ADM){ ['refbtn','autobtn'].forEach(function(id){ var b=document.getElementById(id); if(b) b.remove(); }); }
+// sigbox — справка по сигналам: пока только владельцу, на публичной её нет
+if(!ADM){ ['refbtn','autobtn','sigbox'].forEach(function(id){ var b=document.getElementById(id); if(b) b.remove(); }); }
 applyTheme(theme());            // подписать кнопку темы под то, что уже применено в <head>
 ntfLabel();
 if(TZ && !tzOk(TZ)) TZ='';      // в localStorage мог остаться пояс, которого нет в этом браузере
