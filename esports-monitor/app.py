@@ -2592,8 +2592,7 @@ function toggleAuto(){
 // публичная версия: ни «Обновить», ни «Авто» — опрос просто всегда идёт раз в 30с.
 // «Авто» тут убрана намеренно: выключив её, друг остался бы вообще без способа
 // обновить ленту, и застывший список выглядел бы как «матчей нет».
-// sigbox — справка по сигналам: пока только владельцу, на публичной её нет
-if(!ADM){ ['refbtn','autobtn','sigbox'].forEach(function(id){ var b=document.getElementById(id); if(b) b.remove(); }); }
+if(!ADM){ ['refbtn','autobtn'].forEach(function(id){ var b=document.getElementById(id); if(b) b.remove(); }); }
 applyTheme(theme());            // подписать кнопку темы под то, что уже применено в <head>
 ntfLabel();
 if(TZ && !tzOk(TZ)) TZ='';      // в localStorage мог остаться пояс, которого нет в этом браузере
